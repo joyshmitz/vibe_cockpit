@@ -547,9 +547,9 @@ impl CollectorRegistry {
 
         // Real collectors
         registry.register(Arc::new(collectors::RuCollector));
+        registry.register(Arc::new(collectors::SysmoniCollector));
 
         // More collectors will be registered here as they're implemented
-        // registry.register(Arc::new(collectors::SysmoniCollector));
         // registry.register(Arc::new(collectors::CautCollector));
         // etc.
         registry
