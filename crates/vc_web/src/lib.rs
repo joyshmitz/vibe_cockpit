@@ -814,6 +814,57 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["total"], 2);
     }
+
+    #[tokio::test]
+    async fn test_machines_pagination_limits_results() {
+        let state = test_state();
+        state
+            .store
+            .insert_json(
+                "machines",
+                &serde_json::json!({
+                    "machine_id": "machine-1",
+                    "hostname": "alpha-host"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "machines",
+                &serde_json::json!({
+                    "machine_id": "machine-2",
+                    "hostname": "bravo-host"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "machines",
+                &serde_json::json!({
+                    "machine_id": "machine-3",
+                    "hostname": "charlie-host"
+                }),
+            )
+            .unwrap();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/machines?limit=1&offset=1")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let machines = json["machines"].as_array().unwrap();
+        assert_eq!(machines.len(), 1);
+        assert_eq!(json["total"], 3);
+        assert_eq!(json["offset"], 1);
+    }
     #[tokio::test]
     async fn test_machines_pagination() {
         let state = test_state();
@@ -975,6 +1026,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_machine_collectors_empty() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/machines/machine-1/collectors")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let collectors = json["collectors"].as_array().unwrap();
+        assert!(collectors.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_machine_collectors_pagination() {
         let state = test_state();
         let app = create_router(state);
@@ -1103,6 +1173,66 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(json["limit"], 1);
     }
+
+    #[tokio::test]
+    async fn test_alerts_limit_excludes_older() {
+        let state = test_state();
+        state
+            .store
+            .insert_json(
+                "alert_history",
+                &serde_json::json!({
+                    "id": 1,
+                    "rule_id": "rule-1",
+                    "fired_at": "2026-01-28T09:00:00Z",
+                    "severity": "warning",
+                    "title": "Oldest"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "alert_history",
+                &serde_json::json!({
+                    "id": 2,
+                    "rule_id": "rule-2",
+                    "fired_at": "2026-01-28T10:00:00Z",
+                    "severity": "warning",
+                    "title": "Older"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "alert_history",
+                &serde_json::json!({
+                    "id": 3,
+                    "rule_id": "rule-3",
+                    "fired_at": "2026-01-28T12:00:00Z",
+                    "severity": "critical",
+                    "title": "Newest"
+                }),
+            )
+            .unwrap();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/alerts?limit=2")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let alerts = json["alerts"].as_array().unwrap();
+        assert_eq!(alerts.len(), 2);
+        assert_eq!(alerts[0]["id"], 3);
+        assert_eq!(alerts[1]["id"], 2);
+    }
     #[tokio::test]
     async fn test_alert_rules_endpoint() {
         let state = test_state();
@@ -1171,6 +1301,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_alert_rules_ordering() {
+        let state = test_state();
+        state
+            .store
+            .insert_json(
+                "alert_rules",
+                &serde_json::json!({
+                    "rule_id": "b-rule",
+                    "name": "B Rule",
+                    "severity": "warning",
+                    "condition_type": "threshold",
+                    "condition_config": "{\"metric\":\"cpu\"}"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "alert_rules",
+                &serde_json::json!({
+                    "rule_id": "a-rule",
+                    "name": "A Rule",
+                    "severity": "warning",
+                    "condition_type": "threshold",
+                    "condition_config": "{\"metric\":\"cpu\"}"
+                }),
+            )
+            .unwrap();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/alerts/rules")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rules = json["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["rule_id"], "a-rule");
+        assert_eq!(rules[1]["rule_id"], "b-rule");
+    }
+
+    #[tokio::test]
     async fn test_accounts_endpoint() {
         let state = test_state();
         let app = create_router(state);
@@ -1233,6 +1410,52 @@ mod tests {
         assert_eq!(accounts.len(), 2);
         assert_eq!(accounts[0]["account_id"], "acct-2");
         assert_eq!(accounts[1]["account_id"], "acct-1");
+    }
+
+    #[tokio::test]
+    async fn test_accounts_limit() {
+        let state = test_state();
+        state
+            .store
+            .insert_json(
+                "account_profile_snapshots",
+                &serde_json::json!({
+                    "machine_id": "machine-1",
+                    "collected_at": "2026-01-28T10:00:00Z",
+                    "provider": "openai",
+                    "account_id": "acct-1",
+                    "email": "older@example.com"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "account_profile_snapshots",
+                &serde_json::json!({
+                    "machine_id": "machine-1",
+                    "collected_at": "2026-01-28T12:00:00Z",
+                    "provider": "openai",
+                    "account_id": "acct-2",
+                    "email": "newer@example.com"
+                }),
+            )
+            .unwrap();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/accounts")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let accounts = json["accounts"].as_array().unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0]["account_id"], "acct-2");
     }
 
     #[tokio::test]
@@ -1340,6 +1563,63 @@ mod tests {
         let sessions = json["sessions"].as_array().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(json["limit"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_sessions_offset() {
+        let state = test_state();
+        state
+            .store
+            .insert_json(
+                "agent_sessions",
+                &serde_json::json!({
+                    "machine_id": "machine-1",
+                    "session_id": "sess-1",
+                    "collected_at": "2026-01-28T10:00:00Z",
+                    "program": "codex-cli"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "agent_sessions",
+                &serde_json::json!({
+                    "machine_id": "machine-1",
+                    "session_id": "sess-2",
+                    "collected_at": "2026-01-28T11:00:00Z",
+                    "program": "claude-code"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "agent_sessions",
+                &serde_json::json!({
+                    "machine_id": "machine-1",
+                    "session_id": "sess-3",
+                    "collected_at": "2026-01-28T12:00:00Z",
+                    "program": "gemini-cli"
+                }),
+            )
+            .unwrap();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/sessions?limit=1&offset=1")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let sessions = json["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["session_id"], "sess-2");
+        assert_eq!(json["offset"], 1);
     }
     #[tokio::test]
     async fn test_guardian_playbooks_endpoint() {
@@ -1529,6 +1809,50 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["limit"], 4);
         assert_eq!(json["offset"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_guardian_pending_limit() {
+        let state = test_state();
+        state
+            .store
+            .insert_json(
+                "guardian_runs",
+                &serde_json::json!({
+                    "id": 41,
+                    "playbook_id": "rate-limit-switch",
+                    "started_at": "2026-01-28T09:00:00Z",
+                    "status": "pending_approval"
+                }),
+            )
+            .unwrap();
+        state
+            .store
+            .insert_json(
+                "guardian_runs",
+                &serde_json::json!({
+                    "id": 42,
+                    "playbook_id": "rate-limit-switch",
+                    "started_at": "2026-01-28T10:00:00Z",
+                    "status": "pending_approval"
+                }),
+            )
+            .unwrap();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/guardian/pending?limit=1")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let pending = json["pending"].as_array().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["id"], 42);
     }
 
     #[tokio::test]
