@@ -1,2 +1,22 @@
 # bv (beads viewer) local config and caches
 .bv/
+
+# Rust build directories (standard and colored variants)
+/target/
+/target-*/
+
+# Test output logs (ephemeral)
+/tests/logs/*.err
+/tests/logs/*.out
+/tests/logs/*.json
+/tests/logs/summary.json
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

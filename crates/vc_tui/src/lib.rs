@@ -15,7 +15,12 @@ pub mod screens;
 pub mod theme;
 pub mod widgets;
 
-pub use screens::{render_overview, OverviewData};
+pub use screens::{
+    render_overview, OverviewData,
+    render_accounts, AccountsData,
+    render_sessions, SessionsData,
+    render_mail, MailData,
+};
 pub use theme::Theme;
 
 /// TUI errors
@@ -115,6 +120,9 @@ pub struct App {
     pub last_error: Option<String>,
     pub theme: Theme,
     pub overview_data: OverviewData,
+    pub accounts_data: AccountsData,
+    pub sessions_data: SessionsData,
+    pub mail_data: MailData,
 }
 
 impl App {
@@ -126,6 +134,9 @@ impl App {
             last_error: None,
             theme: Theme::default(),
             overview_data: OverviewData::default(),
+            accounts_data: AccountsData::default(),
+            sessions_data: SessionsData::default(),
+            mail_data: MailData::default(),
         }
     }
 
@@ -134,6 +145,15 @@ impl App {
         match self.current_screen {
             Screen::Overview => {
                 render_overview(f, &self.overview_data, &self.theme);
+            }
+            Screen::Accounts => {
+                render_accounts(f, &self.accounts_data, &self.theme);
+            }
+            Screen::Sessions => {
+                render_sessions(f, &self.sessions_data, &self.theme);
+            }
+            Screen::Mail => {
+                render_mail(f, &self.mail_data, &self.theme);
             }
             _ => {
                 // Placeholder for other screens - render a simple message
