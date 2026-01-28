@@ -3,14 +3,17 @@
 //! This is the main entry point for the `vc` binary.
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use vc_cli::Cli;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse CLI arguments
-    let cli = Cli::parse();
+    // Parse CLI arguments with build metadata in version output
+    let mut cmd = Cli::command();
+    cmd = cmd.version(build_version());
+    let matches = cmd.get_matches();
+    let cli = Cli::from_arg_matches(&matches)?;
 
     // Set up logging based on verbosity
     let filter = if cli.verbose {
@@ -28,4 +31,11 @@ async fn main() -> Result<()> {
     cli.run().await?;
 
     Ok(())
+}
+
+fn build_version() -> String {
+    let pkg = env!("CARGO_PKG_VERSION");
+    let sha = env!("VERGEN_GIT_SHA");
+    let ts = env!("VERGEN_BUILD_TIMESTAMP");
+    format!("{pkg} ({sha}; built {ts})")
 }
