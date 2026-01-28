@@ -114,7 +114,11 @@ impl Collector for CassCollector {
         let collected_at = ctx.collected_at.to_rfc3339();
 
         // Collect health status
-        match ctx.executor.run_timeout("cass health --json", ctx.timeout).await {
+        match ctx
+            .executor
+            .run_timeout("cass health --json", ctx.timeout)
+            .await
+        {
             Ok(output) => {
                 match serde_json::from_str::<CassHealthOutput>(&output) {
                     Ok(health) => {
@@ -156,7 +160,11 @@ impl Collector for CassCollector {
         }
 
         // Collect stats
-        match ctx.executor.run_timeout("cass stats --json", ctx.timeout).await {
+        match ctx
+            .executor
+            .run_timeout("cass stats --json", ctx.timeout)
+            .await
+        {
             Ok(output) => {
                 match serde_json::from_str::<CassStatsOutput>(&output) {
                     Ok(stats) => {
@@ -265,7 +273,10 @@ mod tests {
 
         assert_eq!(health.state, "ready");
         assert_eq!(health.total_sessions, 1500);
-        assert_eq!(health.last_index_at, Some("2026-01-27T00:00:00Z".to_string()));
+        assert_eq!(
+            health.last_index_at,
+            Some("2026-01-27T00:00:00Z".to_string())
+        );
         assert_eq!(health.index_size_bytes, 52428800);
         assert_eq!(health.freshness_seconds, 120);
     }

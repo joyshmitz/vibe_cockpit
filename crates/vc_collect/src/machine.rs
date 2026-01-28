@@ -211,13 +211,17 @@ impl MachineRegistry {
 
     pub fn load_from_config(&self, config: &VcConfig) -> Result<usize, RegistryError> {
         let mut machines: Vec<Machine> = Vec::new();
+        let mut has_local = false;
 
-        if config.machines.is_empty() {
-            machines.push(local_machine_default());
-        } else {
-            for (id, machine) in &config.machines {
-                machines.push(machine_from_config(id, machine));
+        for (id, machine) in &config.machines {
+            if id == "local" {
+                has_local = true;
             }
+            machines.push(machine_from_config(id, machine));
+        }
+
+        if !has_local {
+            machines.push(local_machine_default());
         }
 
         let rows: Vec<_> = machines.iter().map(|m| m.to_row()).collect();
@@ -302,6 +306,24 @@ impl MachineRegistry {
         self.store.execute(&sql)?;
         Ok(())
     }
+
+    /// Insert or update a machine in the registry
+    pub fn upsert_machine(&self, machine: &Machine) -> Result<(), RegistryError> {
+        let row = machine.to_row();
+        self.store
+            .upsert_json("machines", &[row], &["machine_id"])?;
+        Ok(())
+    }
+
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RegistryError> {
+        let sql = format!(
+            "UPDATE machines SET enabled = {} WHERE machine_id = '{}'",
+            if enabled { "TRUE" } else { "FALSE" },
+            escape_sql_literal(id)
+        );
+        self.store.execute(&sql)?;
+        Ok(())
+    }
 }
 
 fn local_machine_default() -> Machine {
@@ -332,7 +354,10 @@ fn machine_from_config(id: &str, config: &MachineConfig) -> Machine {
         .ssh_host
         .clone()
         .unwrap_or_else(|| config.name.clone());
-    let ssh_key_path = config.ssh_key.as_ref().map(|p| p.to_string_lossy().to_string());
+    let ssh_key_path = config
+        .ssh_key
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
     let is_local = config.ssh_host.is_none();
 
     let metadata = if config.collectors.is_empty() && config.tags.is_empty() {
@@ -430,5 +455,21 @@ mod tests {
         assert!(!machine.is_local);
         assert_eq!(machine.ssh_port, 2222);
         assert_eq!(machine.ssh_user.as_deref(), Some("ubuntu"));
+
+        let local = registry.get_machine("local").unwrap().unwrap();
+        assert!(local.is_local);
+    }
+
+    #[test]
+    fn test_registry_set_enabled() {
+        let store = Arc::new(VcStore::open_memory().unwrap());
+        let registry = MachineRegistry::new(store);
+        let config = VcConfig::default();
+
+        registry.load_from_config(&config).unwrap();
+        registry.set_enabled("local", false).unwrap();
+
+        let machine = registry.get_machine("local").unwrap().unwrap();
+        assert!(!machine.enabled);
     }
 }

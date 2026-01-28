@@ -278,11 +278,7 @@ impl Executor {
     #[instrument(skip(self))]
     pub async fn http_get(&self, url: &str, timeout: Duration) -> Result<String, CollectError> {
         let timeout_secs = timeout.as_secs().max(1);
-        let cmd = format!(
-            "curl -s --max-time {} {}",
-            timeout_secs,
-            shell_escape(url)
-        );
+        let cmd = format!("curl -s --max-time {} {}", timeout_secs, shell_escape(url));
 
         let output = self.run(&cmd, timeout).await?;
 
@@ -438,9 +434,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_timeout_failure() {
         let executor = Executor::local();
-        let result = executor
-            .run_timeout("exit 1", Duration::from_secs(5))
-            .await;
+        let result = executor.run_timeout("exit 1", Duration::from_secs(5)).await;
         assert!(result.is_err());
     }
 

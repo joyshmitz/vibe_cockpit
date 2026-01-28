@@ -281,9 +281,10 @@ impl Collector for PtCollector {
             }
 
             // Determine category
-            let category = proc.category.as_deref().unwrap_or_else(|| {
-                Self::categorize_process(&proc.name, proc.cmdline.as_deref())
-            });
+            let category = proc
+                .category
+                .as_deref()
+                .unwrap_or_else(|| Self::categorize_process(&proc.name, proc.cmdline.as_deref()));
 
             // Process row
             process_rows.push(serde_json::json!({
@@ -429,7 +430,10 @@ mod tests {
 
     #[test]
     fn test_categorize_agent_claude() {
-        assert_eq!(PtCollector::categorize_process("claude-code", None), "agent");
+        assert_eq!(
+            PtCollector::categorize_process("claude-code", None),
+            "agent"
+        );
         assert_eq!(
             PtCollector::categorize_process("node", Some("claude-code --project /foo")),
             "agent"

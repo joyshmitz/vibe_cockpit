@@ -180,10 +180,7 @@ impl Collector for RanoCollector {
             )
         } else {
             // Use window-based export for initial collection
-            format!(
-                "rano export --format jsonl --since {}",
-                self.export_window
-            )
+            format!("rano export --format jsonl --since {}", self.export_window)
         };
 
         // Run the export command
@@ -241,10 +238,7 @@ impl Collector for RanoCollector {
                     }));
                 }
                 Err(e) => {
-                    warnings.push(Warning::warn(format!(
-                        "Failed to parse rano event: {}",
-                        e
-                    )));
+                    warnings.push(Warning::warn(format!("Failed to parse rano event: {}", e)));
                 }
             }
 

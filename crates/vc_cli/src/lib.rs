@@ -9,14 +9,16 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
+use vc_collect::executor::Executor;
 use vc_config::VcConfig;
 use vc_store::{AuditEventFilter, AuditEventType, VcStore};
-use std::sync::Arc;
 
 pub mod robot;
 
-pub use robot::{RobotEnvelope, HealthData, TriageData, StatusData};
+pub use robot::{HealthData, RobotEnvelope, StatusData, TriageData};
 
 /// CLI errors
 #[derive(Error, Debug)]
@@ -54,7 +56,11 @@ pub enum OutputFormat {
 /// Main CLI application
 #[derive(Parser, Debug)]
 #[command(name = "vc")]
-#[command(author, version, about = "Vibe Cockpit - Agent fleet monitoring and orchestration")]
+#[command(
+    author,
+    version,
+    about = "Vibe Cockpit - Agent fleet monitoring and orchestration"
+)]
 pub struct Cli {
     /// Configuration file path
     #[arg(short, long, global = true)]
@@ -426,7 +432,10 @@ impl Cli {
                 // TUI implementation will go here
             }
             Commands::Status { machine } => {
-                println!("Status for {:?}", machine.unwrap_or_else(|| "all".to_string()));
+                println!(
+                    "Status for {:?}",
+                    machine.unwrap_or_else(|| "all".to_string())
+                );
                 // Status implementation will go here
             }
             Commands::Robot { command } => {
@@ -539,15 +548,31 @@ impl Cli {
                 let _ = registry.load_from_config(&config);
 
                 match command {
-                    MachineCommands::List { status, tags, enabled } => {
-                        let status_filter = status.as_ref().and_then(|s| match s.to_lowercase().as_str() {
-                            "online" => Some(vc_collect::machine::MachineStatus::Online),
-                            "offline" => Some(vc_collect::machine::MachineStatus::Offline),
-                            "unknown" => Some(vc_collect::machine::MachineStatus::Unknown),
-                            _ => None,
-                        });
+                    MachineCommands::List {
+                        status,
+                        tags,
+                        enabled,
+                    } => {
+                        let status_filter =
+                            status
+                                .as_ref()
+                                .and_then(|s| match s.to_lowercase().as_str() {
+                                    "online" => Some(vc_collect::machine::MachineStatus::Online),
+                                    "offline" => Some(vc_collect::machine::MachineStatus::Offline),
+                                    "unknown" => Some(vc_collect::machine::MachineStatus::Unknown),
+                                    _ => None,
+                                });
                         let tags_filter = tags.as_ref().map(|t| {
-                            t.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>()
+                            t.split(',')
+                                .filter_map(|s| {
+                                    let trimmed = s.trim();
+                                    if trimmed.is_empty() {
+                                        None
+                                    } else {
+                                        Some(trimmed.to_string())
+                                    }
+                                })
+                                .collect::<Vec<_>>()
                         });
                         let filter = vc_collect::machine::MachineFilter {
                             status: status_filter,
@@ -558,14 +583,25 @@ impl Cli {
                         let machines = registry.list_machines(Some(filter)).unwrap_or_default();
                         print_output(&machines, self.format);
                     }
-                    MachineCommands::Show { id } => {
-                        match registry.get_machine(&id) {
-                            Ok(Some(machine)) => print_output(&machine, self.format),
-                            Ok(None) => return Err(CliError::CommandFailed(format!("Machine not found: {id}"))),
-                            Err(e) => return Err(CliError::CommandFailed(format!("Error fetching machine: {e}"))),
+                    MachineCommands::Show { id } => match registry.get_machine(&id) {
+                        Ok(Some(machine)) => print_output(&machine, self.format),
+                        Ok(None) => {
+                            return Err(CliError::CommandFailed(format!(
+                                "Machine not found: {id}"
+                            )));
                         }
-                    }
-                    MachineCommands::Add { id, ssh, port, tags } => {
+                        Err(e) => {
+                            return Err(CliError::CommandFailed(format!(
+                                "Error fetching machine: {e}"
+                            )));
+                        }
+                    },
+                    MachineCommands::Add {
+                        id,
+                        ssh,
+                        port,
+                        tags,
+                    } => {
                         // Parse SSH string (user@host)
                         let (ssh_user, ssh_host) = if let Some(ssh) = ssh {
                             if let Some((user, host)) = ssh.split_once('@') {
@@ -576,7 +612,20 @@ impl Cli {
                         } else {
                             (None, None)
                         };
-                        let tags_vec = tags.map(|t| t.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>()).unwrap_or_default();
+                        let tags_vec = tags
+                            .map(|t| {
+                                t.split(',')
+                                    .filter_map(|s| {
+                                        let trimmed = s.trim();
+                                        if trimmed.is_empty() {
+                                            None
+                                        } else {
+                                            Some(trimmed.to_string())
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
                         let is_local = ssh_host.is_none();
 
                         let machine = vc_collect::machine::Machine {
@@ -598,18 +647,105 @@ impl Cli {
                             metadata: None,
                             enabled: true,
                         };
-                        println!("Machine added: {}", id);
+                        registry.upsert_machine(&machine).map_err(|e| {
+                            CliError::CommandFailed(format!("Failed to add machine: {e}"))
+                        })?;
                         print_output(&machine, self.format);
                     }
                     MachineCommands::Probe { id } => {
-                        println!("Probing machine {} for available tools...", id);
-                        // Tool probing will be implemented in bd-3nb.3
-                        println!("Tool probing not yet implemented. See bd-3nb.3.");
+                        let machine = match registry.get_machine(&id) {
+                            Ok(Some(machine)) => machine,
+                            Ok(None) => {
+                                return Err(CliError::CommandFailed(format!(
+                                    "Machine not found: {id}"
+                                )));
+                            }
+                            Err(e) => {
+                                return Err(CliError::CommandFailed(format!(
+                                    "Error fetching machine: {e}"
+                                )));
+                            }
+                        };
+
+                        let executor = match machine.ssh_config() {
+                            Some(cfg) => Executor::remote(cfg),
+                            None => Executor::local(),
+                        };
+
+                        let probe = executor.run("uname -s", Duration::from_secs(5)).await;
+                        let (status, detail) = match probe {
+                            Ok(output) if output.exit_code == 0 => {
+                                registry
+                                    .update_status(&id, vc_collect::machine::MachineStatus::Online)
+                                    .map_err(|e| {
+                                        CliError::CommandFailed(format!(
+                                            "Status update failed: {e}"
+                                        ))
+                                    })?;
+                                (
+                                    vc_collect::machine::MachineStatus::Online,
+                                    Some(output.stdout.trim().to_string()),
+                                )
+                            }
+                            Ok(output) => {
+                                registry
+                                    .update_status(&id, vc_collect::machine::MachineStatus::Offline)
+                                    .map_err(|e| {
+                                        CliError::CommandFailed(format!(
+                                            "Status update failed: {e}"
+                                        ))
+                                    })?;
+                                (
+                                    vc_collect::machine::MachineStatus::Offline,
+                                    Some(output.stderr),
+                                )
+                            }
+                            Err(err) => {
+                                registry
+                                    .update_status(&id, vc_collect::machine::MachineStatus::Offline)
+                                    .map_err(|e| {
+                                        CliError::CommandFailed(format!(
+                                            "Status update failed: {e}"
+                                        ))
+                                    })?;
+                                (
+                                    vc_collect::machine::MachineStatus::Offline,
+                                    Some(err.to_string()),
+                                )
+                            }
+                        };
+
+                        let payload = serde_json::json!({
+                            "machine_id": id,
+                            "status": status.as_str(),
+                            "probe": {
+                                "command": "uname -s",
+                                "detail": detail,
+                            }
+                        });
+                        print_output(&payload, self.format);
                     }
                     MachineCommands::Enable { id, enabled } => {
-                        println!("Setting machine {} enabled={}", id, enabled);
-                        // This would update the machine's enabled status in the database
-                        println!("Machine enable/disable not yet fully implemented.");
+                        let existing = registry.get_machine(&id).map_err(|e| {
+                            CliError::CommandFailed(format!("Error fetching machine: {e}"))
+                        })?;
+                        if existing.is_none() {
+                            return Err(CliError::CommandFailed(format!(
+                                "Machine not found: {id}"
+                            )));
+                        }
+                        registry.set_enabled(&id, enabled).map_err(|e| {
+                            CliError::CommandFailed(format!("Enable update failed: {e}"))
+                        })?;
+                        let updated = registry
+                            .get_machine(&id)
+                            .map_err(|e| {
+                                CliError::CommandFailed(format!("Error fetching machine: {e}"))
+                            })?
+                            .ok_or_else(|| {
+                                CliError::CommandFailed(format!("Machine not found: {id}"))
+                            })?;
+                        print_output(&updated, self.format);
                     }
                 }
             }
@@ -645,7 +781,8 @@ impl Cli {
                                 params.insert(key.to_string(), value.to_string());
                             } else {
                                 return Err(CliError::CommandFailed(format!(
-                                    "Invalid parameter format: '{}'. Use key=value", p
+                                    "Invalid parameter format: '{}'. Use key=value",
+                                    p
                                 )));
                             }
                         }
@@ -658,18 +795,21 @@ impl Cli {
                         print_output(&rows, self.format);
                     }
                     QueryCommands::Templates => {
-                        let templates: Vec<_> = validator.templates()
+                        let templates: Vec<_> = validator
+                            .templates()
                             .iter()
-                            .map(|(name, t)| serde_json::json!({
-                                "name": name,
-                                "description": t.description,
-                                "params": t.params.iter().map(|p| serde_json::json!({
-                                    "name": p.name,
-                                    "description": p.description,
-                                    "default": p.default,
-                                })).collect::<Vec<_>>(),
-                                "agent_safe": t.agent_safe,
-                            }))
+                            .map(|(name, t)| {
+                                serde_json::json!({
+                                    "name": name,
+                                    "description": t.description,
+                                    "params": t.params.iter().map(|p| serde_json::json!({
+                                        "name": p.name,
+                                        "description": p.description,
+                                        "default": p.default,
+                                    })).collect::<Vec<_>>(),
+                                    "agent_safe": t.agent_safe,
+                                })
+                            })
                             .collect();
                         print_output(&templates, self.format);
                     }
@@ -975,6 +1115,139 @@ mod tests {
             assert!(matches!(command, RobotCommands::Status));
         } else {
             panic!("Expected Robot command");
+        }
+    }
+
+    // =============================================================================
+    // Commands::Machines Tests
+    // =============================================================================
+
+    #[test]
+    fn test_machines_list_parse() {
+        let cli = Cli::parse_from(["vc", "machines", "list"]);
+        if let Commands::Machines { command } = cli.command {
+            if let MachineCommands::List {
+                status,
+                tags,
+                enabled,
+            } = command
+            {
+                assert!(status.is_none());
+                assert!(tags.is_none());
+                assert!(enabled.is_none());
+            } else {
+                panic!("Expected Machines list command");
+            }
+        } else {
+            panic!("Expected Machines command");
+        }
+    }
+
+    #[test]
+    fn test_machines_list_filters_parse() {
+        let cli = Cli::parse_from([
+            "vc",
+            "machines",
+            "list",
+            "--status",
+            "online",
+            "--tags",
+            "mini,builder",
+            "--enabled",
+            "true",
+        ]);
+        if let Commands::Machines { command } = cli.command {
+            if let MachineCommands::List {
+                status,
+                tags,
+                enabled,
+            } = command
+            {
+                assert_eq!(status, Some("online".to_string()));
+                assert_eq!(tags, Some("mini,builder".to_string()));
+                assert_eq!(enabled, Some(true));
+            } else {
+                panic!("Expected Machines list command");
+            }
+        } else {
+            panic!("Expected Machines command");
+        }
+    }
+
+    #[test]
+    fn test_machines_show_parse() {
+        let cli = Cli::parse_from(["vc", "machines", "show", "mac-mini-1"]);
+        if let Commands::Machines { command } = cli.command {
+            if let MachineCommands::Show { id } = command {
+                assert_eq!(id, "mac-mini-1");
+            } else {
+                panic!("Expected Machines show command");
+            }
+        } else {
+            panic!("Expected Machines command");
+        }
+    }
+
+    #[test]
+    fn test_machines_add_parse() {
+        let cli = Cli::parse_from([
+            "vc",
+            "machines",
+            "add",
+            "mac-mini-3",
+            "--ssh",
+            "ubuntu@192.168.1.102",
+            "--port",
+            "2222",
+            "--tags",
+            "mini,builder",
+        ]);
+        if let Commands::Machines { command } = cli.command {
+            if let MachineCommands::Add {
+                id,
+                ssh,
+                port,
+                tags,
+            } = command
+            {
+                assert_eq!(id, "mac-mini-3");
+                assert_eq!(ssh, Some("ubuntu@192.168.1.102".to_string()));
+                assert_eq!(port, 2222);
+                assert_eq!(tags, Some("mini,builder".to_string()));
+            } else {
+                panic!("Expected Machines add command");
+            }
+        } else {
+            panic!("Expected Machines command");
+        }
+    }
+
+    #[test]
+    fn test_machines_probe_parse() {
+        let cli = Cli::parse_from(["vc", "machines", "probe", "mac-mini-1"]);
+        if let Commands::Machines { command } = cli.command {
+            if let MachineCommands::Probe { id } = command {
+                assert_eq!(id, "mac-mini-1");
+            } else {
+                panic!("Expected Machines probe command");
+            }
+        } else {
+            panic!("Expected Machines command");
+        }
+    }
+
+    #[test]
+    fn test_machines_enable_parse() {
+        let cli = Cli::parse_from(["vc", "machines", "enable", "mac-mini-1", "--enabled"]);
+        if let Commands::Machines { command } = cli.command {
+            if let MachineCommands::Enable { id, enabled } = command {
+                assert_eq!(id, "mac-mini-1");
+                assert!(enabled);
+            } else {
+                panic!("Expected Machines enable command");
+            }
+        } else {
+            panic!("Expected Machines command");
         }
     }
 
@@ -1290,13 +1563,7 @@ mod tests {
     #[test]
     fn test_fleet_migrate_parse() {
         let cli = Cli::parse_from([
-            "vc",
-            "fleet",
-            "migrate",
-            "--from",
-            "server-1",
-            "--to",
-            "server-2",
+            "vc", "fleet", "migrate", "--from", "server-1", "--to", "server-2",
         ]);
         if let Commands::Fleet { command } = cli.command {
             if let FleetCommands::Migrate { from, to, workload } = command {

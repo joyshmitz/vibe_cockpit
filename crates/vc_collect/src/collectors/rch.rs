@@ -244,10 +244,7 @@ impl Collector for RchCollector {
                     }));
                 }
                 Err(e) => {
-                    warnings.push(Warning::warn(format!(
-                        "Failed to parse JSONL line: {}",
-                        e
-                    )));
+                    warnings.push(Warning::warn(format!("Failed to parse JSONL line: {}", e)));
                 }
             }
 
@@ -280,10 +277,7 @@ impl Collector for RchCollector {
                 }
             }
             Err(e) => {
-                warnings.push(Warning::warn(format!(
-                    "Failed to get rch status: {}",
-                    e
-                )));
+                warnings.push(Warning::warn(format!("Failed to get rch status: {}", e)));
             }
         }
 

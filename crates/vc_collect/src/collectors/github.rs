@@ -183,9 +183,7 @@ impl GhCollector {
             .collect();
 
         // Sort by total count descending
-        result.sort_by(|a, b| {
-            (b.issue_count + b.pr_count).cmp(&(a.issue_count + a.pr_count))
-        });
+        result.sort_by(|a, b| (b.issue_count + b.pr_count).cmp(&(a.issue_count + a.pr_count)));
 
         result
     }
@@ -358,7 +356,10 @@ impl Collector for GhCollector {
             error: if success {
                 None
             } else {
-                Some("No GitHub data collected (repo may not be a git repo or gh not authenticated)".to_string())
+                Some(
+                    "No GitHub data collected (repo may not be a git repo or gh not authenticated)"
+                        .to_string(),
+                )
             },
         })
     }
@@ -393,7 +394,10 @@ mod tests {
 
         let view: GhRepoView = serde_json::from_str(json).unwrap();
         assert_eq!(view.name, Some("vibe_cockpit".to_string()));
-        assert_eq!(view.name_with_owner, Some("Dicklesworthstone/vibe_cockpit".to_string()));
+        assert_eq!(
+            view.name_with_owner,
+            Some("Dicklesworthstone/vibe_cockpit".to_string())
+        );
         assert!(!view.is_private);
         assert!(!view.is_archived);
         assert_eq!(view.stargazer_count, 10);
@@ -522,39 +526,42 @@ mod tests {
 
     #[test]
     fn test_label_breakdown() {
-        let issues = vec![
-            GhIssue {
-                number: 1,
-                title: "Bug".to_string(),
-                state: "OPEN".to_string(),
-                labels: vec![
-                    GhLabel { name: "bug".to_string(), color: None },
-                    GhLabel { name: "p1".to_string(), color: None },
-                ],
-                assignees: vec![],
-                created_at: None,
-                updated_at: None,
-                author: None,
-            },
-        ];
+        let issues = vec![GhIssue {
+            number: 1,
+            title: "Bug".to_string(),
+            state: "OPEN".to_string(),
+            labels: vec![
+                GhLabel {
+                    name: "bug".to_string(),
+                    color: None,
+                },
+                GhLabel {
+                    name: "p1".to_string(),
+                    color: None,
+                },
+            ],
+            assignees: vec![],
+            created_at: None,
+            updated_at: None,
+            author: None,
+        }];
 
-        let prs = vec![
-            GhPullRequest {
-                number: 10,
-                title: "Fix".to_string(),
-                state: "OPEN".to_string(),
-                labels: vec![
-                    GhLabel { name: "bug".to_string(), color: None },
-                ],
-                assignees: vec![],
-                created_at: None,
-                updated_at: None,
-                author: None,
-                is_draft: false,
-                mergeable: None,
-                review_decision: None,
-            },
-        ];
+        let prs = vec![GhPullRequest {
+            number: 10,
+            title: "Fix".to_string(),
+            state: "OPEN".to_string(),
+            labels: vec![GhLabel {
+                name: "bug".to_string(),
+                color: None,
+            }],
+            assignees: vec![],
+            created_at: None,
+            updated_at: None,
+            author: None,
+            is_draft: false,
+            mergeable: None,
+            review_decision: None,
+        }];
 
         let breakdown = GhCollector::count_labels(&issues, &prs);
 

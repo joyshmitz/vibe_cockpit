@@ -72,16 +72,14 @@ impl<T: Serialize> RobotEnvelope<T> {
 
     /// Serialize to pretty JSON string
     pub fn to_json_pretty(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|e| {
-            format!(r#"{{"error": "serialization failed: {}"}}"#, e)
-        })
+        serde_json::to_string_pretty(self)
+            .unwrap_or_else(|e| format!(r#"{{"error": "serialization failed: {}"}}"#, e))
     }
 
     /// Serialize to compact JSON string
     pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|e| {
-            format!(r#"{{"error": "serialization failed: {}"}}"#, e)
-        })
+        serde_json::to_string(self)
+            .unwrap_or_else(|e| format!(r#"{{"error": "serialization failed: {}"}}"#, e))
     }
 }
 
@@ -436,8 +434,7 @@ mod tests {
         let mut staleness = HashMap::new();
         staleness.insert("sysmoni".to_string(), 60);
 
-        let envelope = RobotEnvelope::new("test.v1", "data")
-            .with_staleness(staleness);
+        let envelope = RobotEnvelope::new("test.v1", "data").with_staleness(staleness);
 
         assert_eq!(envelope.staleness.get("sysmoni"), Some(&60));
     }

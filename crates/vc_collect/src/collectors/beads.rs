@@ -289,12 +289,16 @@ impl Collector for BeadsCollector {
                     });
                 }
                 Err(e) => {
-                    warnings.push(Warning::error(format!("Failed to parse bv triage: {e}"))
-                        .with_context(output));
+                    warnings.push(
+                        Warning::error(format!("Failed to parse bv triage: {e}"))
+                            .with_context(output),
+                    );
                 }
             },
             Err(e) => {
-                warnings.push(Warning::warn(format!("Failed to run bv --robot-triage: {e}")));
+                warnings.push(Warning::warn(format!(
+                    "Failed to run bv --robot-triage: {e}"
+                )));
             }
         }
 
