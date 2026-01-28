@@ -18,6 +18,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "initial_schema",
         sql: include_str!("migrations/001_initial_schema.sql"),
     },
+    Migration {
+        version: 2,
+        name: "machine_registry",
+        sql: include_str!("migrations/002_machine_registry.sql"),
+    },
     // Additional migrations will be added here
 ];
 

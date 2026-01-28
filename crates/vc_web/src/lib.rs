@@ -97,7 +97,12 @@ impl WebServer {
     }
 
     pub fn router(&self) -> Router {
-        create_router(self.state.clone())
+        let router = create_router(self.state.clone());
+        if self.config.cors_enabled {
+            router.layer(CorsLayer::permissive())
+        } else {
+            router
+        }
     }
 
     pub async fn run(&self) -> Result<(), WebError> {
@@ -168,7 +173,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/ws", get(ws_handler))
         // Middleware
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
@@ -739,6 +743,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_machine_collectors_pagination() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/machines/test-machine/collectors?limit=5&offset=2")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["limit"], 5);
+        assert_eq!(json["offset"], 2);
+    }
+
+    #[tokio::test]
     async fn test_alerts_endpoint() {
         let state = test_state();
         let app = create_router(state);
@@ -772,6 +795,25 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("rules").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_alert_rules_pagination() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/alerts/rules?limit=3&offset=1")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["limit"], 3);
+        assert_eq!(json["offset"], 1);
     }
 
     #[tokio::test]
@@ -862,6 +904,25 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("pending").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_guardian_pending_pagination() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/api/guardian/pending?limit=4&offset=2")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["limit"], 4);
+        assert_eq!(json["offset"], 2);
     }
 
     #[tokio::test]

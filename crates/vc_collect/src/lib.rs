@@ -24,6 +24,9 @@ use thiserror::Error;
 
 pub mod collectors;
 pub mod executor;
+pub mod machine;
+
+pub use machine::{Machine, MachineFilter, MachineRegistry, MachineStatus, ToolInfo};
 
 /// Collection errors
 #[derive(Error, Debug)]

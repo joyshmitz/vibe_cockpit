@@ -471,5 +471,7 @@ CREATE INDEX IF NOT EXISTS idx_account_usage_ts ON account_usage_snapshots(colle
 CREATE INDEX IF NOT EXISTS idx_alert_history_fired ON alert_history(fired_at);
 CREATE INDEX IF NOT EXISTS idx_health_summary_ts ON health_summary(collected_at);
 CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(ts);
+CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_events_machine ON audit_events(machine_id);
 CREATE INDEX IF NOT EXISTS idx_dcg_events_ts ON dcg_events(ts);
 CREATE INDEX IF NOT EXISTS idx_net_events_ts ON net_events(ts);

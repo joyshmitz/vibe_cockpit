@@ -6,9 +6,12 @@
 //! - TOON output support
 //! - All subcommands (status, tui, daemon, robot, etc.)
 
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use vc_config::VcConfig;
+use vc_store::{AuditEventFilter, AuditEventType, VcStore};
 
 pub mod robot;
 
@@ -28,6 +31,9 @@ pub enum CliError {
 
     #[error("Query error: {0}")]
     QueryError(#[from] vc_query::QueryError),
+
+    #[error("Validation error: {0}")]
+    ValidationError(#[from] vc_query::ValidationError),
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -152,6 +158,45 @@ pub enum Commands {
         #[arg(short, long, default_value = "127.0.0.1")]
         bind: String,
     },
+
+    /// Audit trail queries
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommands,
+    },
+
+    /// Query the database with guardrails
+    Query {
+        #[command(subcommand)]
+        command: QueryCommands,
+    },
+}
+
+/// Query subcommands
+#[derive(Subcommand, Debug)]
+pub enum QueryCommands {
+    /// Run a raw SQL query (SELECT only)
+    Raw {
+        /// SQL query to execute
+        sql: String,
+
+        /// Maximum rows to return
+        #[arg(long, default_value = "1000")]
+        limit: usize,
+    },
+
+    /// Run a safe template query
+    Template {
+        /// Template name
+        name: String,
+
+        /// Parameters in key=value format
+        #[arg(short, long)]
+        param: Vec<String>,
+    },
+
+    /// List available templates
+    Templates,
 }
 
 /// Robot mode subcommands
@@ -277,6 +322,35 @@ pub enum FleetCommands {
     },
 }
 
+/// Audit trail subcommands
+#[derive(Subcommand, Debug)]
+pub enum AuditCommands {
+    /// List audit events
+    List {
+        /// Filter by event type
+        #[arg(long)]
+        event_type: Option<String>,
+
+        /// Filter by machine ID
+        #[arg(long)]
+        machine: Option<String>,
+
+        /// Filter by RFC3339 timestamp (inclusive)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Limit number of events returned
+        #[arg(long, default_value = "100")]
+        limit: usize,
+    },
+
+    /// Show audit event details by ID
+    Show {
+        /// Audit event ID
+        id: i64,
+    },
+}
+
 impl Cli {
     /// Run the CLI
     pub async fn run(self) -> Result<(), CliError> {
@@ -334,12 +408,142 @@ impl Cli {
                     }
                 }
             }
+            Commands::Audit { command } => {
+                let store = open_store(self.config.as_ref())?;
+                match command {
+                    AuditCommands::List {
+                        event_type,
+                        machine,
+                        since,
+                        limit,
+                    } => {
+                        let event_type = match event_type {
+                            Some(value) => Some(
+                                value
+                                    .parse::<AuditEventType>()
+                                    .map_err(CliError::CommandFailed)?,
+                            ),
+                            None => None,
+                        };
+
+                        let since = match since {
+                            Some(value) => Some(parse_rfc3339(&value)?),
+                            None => None,
+                        };
+
+                        let filter = AuditEventFilter {
+                            event_type,
+                            machine_id: machine,
+                            since,
+                            limit,
+                        };
+                        let rows = store.list_audit_events(&filter)?;
+                        print_output(&rows, self.format);
+                    }
+                    AuditCommands::Show { id } => {
+                        let row = store.get_audit_event(id)?;
+                        if let Some(row) = row {
+                            print_output(&row, self.format);
+                        } else {
+                            return Err(CliError::CommandFailed(format!(
+                                "Audit event not found: {id}"
+                            )));
+                        }
+                    }
+                }
+            }
+            Commands::Query { command } => {
+                let store = open_store(self.config.as_ref())?;
+                let validator = vc_query::QueryValidator::new(vc_query::GuardrailConfig::default());
+
+                match command {
+                    QueryCommands::Raw { sql, limit } => {
+                        // Validate the query is read-only
+                        validator.validate_raw(&sql)?;
+
+                        // Add LIMIT if not present
+                        let query = if sql.to_uppercase().contains("LIMIT") {
+                            sql
+                        } else {
+                            format!("{} LIMIT {}", sql.trim_end_matches(';'), limit)
+                        };
+
+                        let rows = store.query_json(&query)?;
+
+                        if rows.len() >= limit {
+                            eprintln!("Warning: Results may be truncated at {} rows", limit);
+                        }
+
+                        print_output(&rows, self.format);
+                    }
+                    QueryCommands::Template { name, param } => {
+                        // Parse parameters
+                        let mut params = std::collections::HashMap::new();
+                        for p in param {
+                            if let Some((key, value)) = p.split_once('=') {
+                                params.insert(key.to_string(), value.to_string());
+                            } else {
+                                return Err(CliError::CommandFailed(format!(
+                                    "Invalid parameter format: '{}'. Use key=value", p
+                                )));
+                            }
+                        }
+
+                        // Expand template
+                        let sql = validator.expand_template(&name, &params)?;
+
+                        // Execute query
+                        let rows = store.query_json(&sql)?;
+                        print_output(&rows, self.format);
+                    }
+                    QueryCommands::Templates => {
+                        let templates: Vec<_> = validator.templates()
+                            .iter()
+                            .map(|(name, t)| serde_json::json!({
+                                "name": name,
+                                "description": t.description,
+                                "params": t.params.iter().map(|p| serde_json::json!({
+                                    "name": p.name,
+                                    "description": p.description,
+                                    "default": p.default,
+                                })).collect::<Vec<_>>(),
+                                "agent_safe": t.agent_safe,
+                            }))
+                            .collect();
+                        print_output(&templates, self.format);
+                    }
+                }
+            }
             _ => {
                 println!("Command not yet implemented: {:?}", self.command);
             }
         }
         Ok(())
     }
+}
+
+fn open_store(config_path: Option<&std::path::PathBuf>) -> Result<VcStore, CliError> {
+    let config = match config_path {
+        Some(path) => VcConfig::load_with_env(path)?,
+        None => VcConfig::discover_with_env()?,
+    };
+    Ok(VcStore::open(&config.global.db_path)?)
+}
+
+fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, CliError> {
+    let parsed = DateTime::parse_from_rfc3339(value)
+        .map_err(|err| CliError::CommandFailed(format!("Invalid timestamp: {err}")))?;
+    Ok(parsed.with_timezone(&Utc))
+}
+
+fn print_output<T: Serialize>(value: &T, format: OutputFormat) {
+    let json = match format {
+        OutputFormat::Json => serde_json::to_string_pretty(value),
+        OutputFormat::Toon => serde_json::to_string(value),
+        OutputFormat::Text => serde_json::to_string_pretty(value),
+    }
+    .unwrap_or_else(|e| format!(r#"{{"error": "serialization failed: {e}"}}"#));
+    println!("{json}");
 }
 
 #[cfg(test)]
@@ -1048,6 +1252,38 @@ mod tests {
             assert_eq!(bind, "192.168.1.1");
         } else {
             panic!("Expected Web command");
+        }
+    }
+
+    // =============================================================================
+    // Commands::Audit Tests
+    // =============================================================================
+
+    #[test]
+    fn test_audit_list_parse() {
+        let cli = Cli::parse_from(["vc", "audit", "list", "--event-type", "collector_run"]);
+        if let Commands::Audit { command } = cli.command {
+            if let AuditCommands::List { event_type, .. } = command {
+                assert_eq!(event_type, Some("collector_run".to_string()));
+            } else {
+                panic!("Expected Audit list");
+            }
+        } else {
+            panic!("Expected Audit command");
+        }
+    }
+
+    #[test]
+    fn test_audit_show_parse() {
+        let cli = Cli::parse_from(["vc", "audit", "show", "42"]);
+        if let Commands::Audit { command } = cli.command {
+            if let AuditCommands::Show { id } = command {
+                assert_eq!(id, 42);
+            } else {
+                panic!("Expected Audit show");
+            }
+        } else {
+            panic!("Expected Audit command");
         }
     }
 

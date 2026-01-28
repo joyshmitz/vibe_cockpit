@@ -5,10 +5,14 @@
 //! - Health score calculation
 //! - Time-travel query support
 //! - Aggregation utilities
+//! - Query guardrails and safe templates
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use vc_store::VcStore;
+
+pub mod guardrails;
+pub use guardrails::{GuardrailConfig, QueryTemplate, QueryValidator, ValidationError};
 
 /// Query errors
 #[derive(Error, Debug)]

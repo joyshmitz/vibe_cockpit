@@ -3,6 +3,7 @@
 /// Table names
 pub mod tables {
     pub const MACHINES: &str = "machines";
+    pub const MACHINE_TOOLS: &str = "machine_tools";
     pub const COLLECTOR_STATUS: &str = "collector_status";
     pub const INGESTION_CURSORS: &str = "ingestion_cursors";
     pub const SYS_FALLBACK_SAMPLES: &str = "sys_fallback_samples";

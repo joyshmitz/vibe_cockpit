@@ -126,6 +126,65 @@ impl Guardian {
                 max_runs_per_hour: 3,
                 enabled: true,
             },
+            Playbook {
+                playbook_id: "stuck-agent-restart".to_string(),
+                name: "Restart Stuck Agent".to_string(),
+                description: "Restart agent that appears stuck (no activity for 10 minutes)".to_string(),
+                trigger: PlaybookTrigger::OnAlert {
+                    rule_id: "agent-stuck".to_string(),
+                },
+                steps: vec![
+                    PlaybookStep::Log {
+                        message: "Agent appears stuck, attempting restart".to_string(),
+                    },
+                    PlaybookStep::Command {
+                        cmd: "pkill".to_string(),
+                        args: vec!["-f".to_string(), "claude-code".to_string()],
+                        timeout_secs: 10,
+                        allow_failure: true,
+                    },
+                    PlaybookStep::Wait { seconds: 5 },
+                    PlaybookStep::Notify {
+                        channel: "tui".to_string(),
+                        message: "Stuck agent terminated, ready for restart".to_string(),
+                    },
+                ],
+                requires_approval: true, // Destructive action
+                max_runs_per_hour: 2,
+                enabled: true,
+            },
+            Playbook {
+                playbook_id: "memory-cleanup".to_string(),
+                name: "Memory Pressure Cleanup".to_string(),
+                description: "Free memory when usage exceeds critical threshold".to_string(),
+                trigger: PlaybookTrigger::OnAlert {
+                    rule_id: "memory-critical".to_string(),
+                },
+                steps: vec![
+                    PlaybookStep::Log {
+                        message: "Memory critical, initiating cleanup".to_string(),
+                    },
+                    PlaybookStep::Command {
+                        cmd: "sync".to_string(),
+                        args: vec![],
+                        timeout_secs: 30,
+                        allow_failure: true,
+                    },
+                    PlaybookStep::Command {
+                        cmd: "sudo".to_string(),
+                        args: vec!["sh".to_string(), "-c".to_string(), "echo 3 > /proc/sys/vm/drop_caches".to_string()],
+                        timeout_secs: 10,
+                        allow_failure: true,
+                    },
+                    PlaybookStep::Notify {
+                        channel: "tui".to_string(),
+                        message: "Memory cleanup attempted".to_string(),
+                    },
+                ],
+                requires_approval: true,
+                max_runs_per_hour: 1,
+                enabled: true,
+            },
         ]
     }
 
@@ -137,6 +196,66 @@ impl Guardian {
     /// Find playbook by ID
     pub fn get_playbook(&self, id: &str) -> Option<&Playbook> {
         self.playbooks.iter().find(|p| p.playbook_id == id)
+    }
+
+    /// Find playbooks that trigger on a specific alert
+    pub fn playbooks_for_alert(&self, alert_rule_id: &str) -> Vec<&Playbook> {
+        self.playbooks
+            .iter()
+            .filter(|p| {
+                p.enabled
+                    && matches!(&p.trigger, PlaybookTrigger::OnAlert { rule_id } if rule_id == alert_rule_id)
+            })
+            .collect()
+    }
+
+    /// Get enabled playbooks only
+    pub fn enabled_playbooks(&self) -> Vec<&Playbook> {
+        self.playbooks.iter().filter(|p| p.enabled).collect()
+    }
+
+    /// Check if playbook should be triggered by an alert
+    pub fn should_trigger(&self, playbook: &Playbook, alert_rule_id: &str) -> bool {
+        if !playbook.enabled {
+            return false;
+        }
+        match &playbook.trigger {
+            PlaybookTrigger::OnAlert { rule_id } => rule_id == alert_rule_id,
+            _ => false,
+        }
+    }
+}
+
+impl Playbook {
+    /// Get total number of steps
+    pub fn step_count(&self) -> usize {
+        self.steps.len()
+    }
+
+    /// Check if this playbook is destructive (requires approval)
+    pub fn is_destructive(&self) -> bool {
+        self.requires_approval
+    }
+}
+
+impl PlaybookStep {
+    /// Check if this step allows failure
+    pub fn allows_failure(&self) -> bool {
+        match self {
+            PlaybookStep::Command { allow_failure, .. } => *allow_failure,
+            _ => false,
+        }
+    }
+
+    /// Get step type name
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            PlaybookStep::Log { .. } => "log",
+            PlaybookStep::Command { .. } => "command",
+            PlaybookStep::SwitchAccount { .. } => "switch_account",
+            PlaybookStep::Notify { .. } => "notify",
+            PlaybookStep::Wait { .. } => "wait",
+        }
     }
 }
 
@@ -492,5 +611,142 @@ mod tests {
     fn test_error_approval_required() {
         let err = GuardianError::ApprovalRequired;
         assert!(err.to_string().contains("Approval required"));
+    }
+
+    // Additional Guardian tests
+    #[test]
+    fn test_default_playbooks_count() {
+        let guardian = Guardian::new();
+        assert_eq!(guardian.playbooks().len(), 3);
+    }
+
+    #[test]
+    fn test_stuck_agent_playbook() {
+        let guardian = Guardian::new();
+        let playbook = guardian.get_playbook("stuck-agent-restart");
+        assert!(playbook.is_some());
+        let playbook = playbook.unwrap();
+        assert!(playbook.requires_approval);
+        assert_eq!(playbook.max_runs_per_hour, 2);
+    }
+
+    #[test]
+    fn test_memory_cleanup_playbook() {
+        let guardian = Guardian::new();
+        let playbook = guardian.get_playbook("memory-cleanup");
+        assert!(playbook.is_some());
+        let playbook = playbook.unwrap();
+        assert!(playbook.requires_approval);
+        assert_eq!(playbook.max_runs_per_hour, 1);
+    }
+
+    #[test]
+    fn test_playbooks_for_alert() {
+        let guardian = Guardian::new();
+        let playbooks = guardian.playbooks_for_alert("rate-limit-warning");
+        assert_eq!(playbooks.len(), 1);
+        assert_eq!(playbooks[0].playbook_id, "rate-limit-switch");
+    }
+
+    #[test]
+    fn test_playbooks_for_alert_not_found() {
+        let guardian = Guardian::new();
+        let playbooks = guardian.playbooks_for_alert("nonexistent-alert");
+        assert!(playbooks.is_empty());
+    }
+
+    #[test]
+    fn test_enabled_playbooks() {
+        let guardian = Guardian::new();
+        let enabled = guardian.enabled_playbooks();
+        assert_eq!(enabled.len(), 3);
+        for p in enabled {
+            assert!(p.enabled);
+        }
+    }
+
+    #[test]
+    fn test_should_trigger() {
+        let guardian = Guardian::new();
+        let playbook = guardian.get_playbook("rate-limit-switch").unwrap();
+        assert!(guardian.should_trigger(playbook, "rate-limit-warning"));
+        assert!(!guardian.should_trigger(playbook, "other-alert"));
+    }
+
+    // Playbook helper tests
+    #[test]
+    fn test_playbook_step_count() {
+        let guardian = Guardian::new();
+        let playbook = guardian.get_playbook("rate-limit-switch").unwrap();
+        assert_eq!(playbook.step_count(), 3);
+    }
+
+    #[test]
+    fn test_playbook_is_destructive() {
+        let guardian = Guardian::new();
+
+        let rate_limit = guardian.get_playbook("rate-limit-switch").unwrap();
+        assert!(!rate_limit.is_destructive());
+
+        let stuck_agent = guardian.get_playbook("stuck-agent-restart").unwrap();
+        assert!(stuck_agent.is_destructive());
+    }
+
+    // PlaybookStep helper tests
+    #[test]
+    fn test_step_allows_failure() {
+        let step_ok = PlaybookStep::Command {
+            cmd: "test".to_string(),
+            args: vec![],
+            timeout_secs: 10,
+            allow_failure: true,
+        };
+        assert!(step_ok.allows_failure());
+
+        let step_fail = PlaybookStep::Command {
+            cmd: "test".to_string(),
+            args: vec![],
+            timeout_secs: 10,
+            allow_failure: false,
+        };
+        assert!(!step_fail.allows_failure());
+
+        let step_log = PlaybookStep::Log { message: "test".to_string() };
+        assert!(!step_log.allows_failure());
+    }
+
+    #[test]
+    fn test_step_type_name() {
+        assert_eq!(
+            PlaybookStep::Log { message: "test".to_string() }.type_name(),
+            "log"
+        );
+        assert_eq!(
+            PlaybookStep::Command {
+                cmd: "test".to_string(),
+                args: vec![],
+                timeout_secs: 10,
+                allow_failure: false
+            }.type_name(),
+            "command"
+        );
+        assert_eq!(
+            PlaybookStep::SwitchAccount {
+                program: "test".to_string(),
+                strategy: "test".to_string()
+            }.type_name(),
+            "switch_account"
+        );
+        assert_eq!(
+            PlaybookStep::Notify {
+                channel: "test".to_string(),
+                message: "test".to_string()
+            }.type_name(),
+            "notify"
+        );
+        assert_eq!(
+            PlaybookStep::Wait { seconds: 5 }.type_name(),
+            "wait"
+        );
     }
 }

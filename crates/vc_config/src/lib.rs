@@ -129,6 +129,10 @@ pub struct MachineConfig {
     /// SSH key path (if remote)
     pub ssh_key: Option<PathBuf>,
 
+    /// SSH port (if remote)
+    #[serde(default = "default_ssh_port")]
+    pub ssh_port: u16,
+
     /// Whether this machine is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -144,6 +148,10 @@ pub struct MachineConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_ssh_port() -> u16 {
+    22
 }
 
 /// Collector configuration
@@ -635,6 +643,7 @@ mod tests {
                 ssh_host: Some("example.com".to_string()),
                 ssh_user: None, // Missing user
                 ssh_key: None,
+                ssh_port: 22,
                 enabled: true,
                 collectors: HashMap::new(),
                 tags: vec![],
@@ -723,6 +732,7 @@ enabled = true
                 ssh_host: None,
                 ssh_user: None,
                 ssh_key: None,
+                ssh_port: 22,
                 enabled: true,
                 collectors,
                 tags: vec![],
@@ -750,6 +760,7 @@ enabled = true
                 ssh_host: None,
                 ssh_user: None,
                 ssh_key: None,
+                ssh_port: 22,
                 enabled: true,
                 collectors: HashMap::new(),
                 tags: vec![],
@@ -765,6 +776,7 @@ enabled = true
                 ssh_host: Some("example.com".to_string()),
                 ssh_user: Some("user".to_string()),
                 ssh_key: None,
+                ssh_port: 22,
                 enabled: true,
                 collectors: HashMap::new(),
                 tags: vec![],
@@ -784,6 +796,7 @@ enabled = true
                 ssh_host: None,
                 ssh_user: None,
                 ssh_key: None,
+                ssh_port: 22,
                 enabled: true,
                 collectors: HashMap::new(),
                 tags: vec![],
@@ -797,6 +810,7 @@ enabled = true
                 ssh_host: None,
                 ssh_user: None,
                 ssh_key: None,
+                ssh_port: 22,
                 enabled: false,
                 collectors: HashMap::new(),
                 tags: vec![],

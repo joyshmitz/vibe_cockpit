@@ -6,7 +6,9 @@
 //! - Data ingestion helpers
 //! - Query utilities
 
+use chrono::{DateTime, Utc};
 use duckdb::Connection;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -32,6 +34,119 @@ pub enum StoreError {
 
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
+}
+
+/// Audit event categories
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditEventType {
+    CollectorRun,
+    AutopilotAction,
+    UserCommand,
+    GuardianAction,
+}
+
+impl AuditEventType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuditEventType::CollectorRun => "collector_run",
+            AuditEventType::AutopilotAction => "autopilot_action",
+            AuditEventType::UserCommand => "user_command",
+            AuditEventType::GuardianAction => "guardian_action",
+        }
+    }
+}
+
+impl std::str::FromStr for AuditEventType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().as_str() {
+            "collector_run" => Ok(AuditEventType::CollectorRun),
+            "autopilot_action" => Ok(AuditEventType::AutopilotAction),
+            "user_command" => Ok(AuditEventType::UserCommand),
+            "guardian_action" => Ok(AuditEventType::GuardianAction),
+            other => Err(format!("unknown audit event type: {other}")),
+        }
+    }
+}
+
+/// Audit event result
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditResult {
+    Success,
+    Failure,
+    Skipped,
+}
+
+impl AuditResult {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuditResult::Success => "success",
+            AuditResult::Failure => "failure",
+            AuditResult::Skipped => "skipped",
+        }
+    }
+}
+
+impl std::str::FromStr for AuditResult {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().as_str() {
+            "success" => Ok(AuditResult::Success),
+            "failure" => Ok(AuditResult::Failure),
+            "skipped" => Ok(AuditResult::Skipped),
+            other => Err(format!("unknown audit result: {other}")),
+        }
+    }
+}
+
+/// Audit event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEvent {
+    pub ts: DateTime<Utc>,
+    pub event_type: AuditEventType,
+    pub actor: String,
+    pub machine_id: Option<String>,
+    pub action: String,
+    pub result: AuditResult,
+    pub details: serde_json::Value,
+}
+
+impl AuditEvent {
+    pub fn new(
+        event_type: AuditEventType,
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        result: AuditResult,
+        details: serde_json::Value,
+    ) -> Self {
+        Self {
+            ts: Utc::now(),
+            event_type,
+            actor: actor.into(),
+            machine_id: None,
+            action: action.into(),
+            result,
+            details,
+        }
+    }
+
+    pub fn with_machine_id(mut self, machine_id: impl Into<String>) -> Self {
+        self.machine_id = Some(machine_id.into());
+        self
+    }
+}
+
+/// Filtering options for audit event queries
+#[derive(Debug, Clone, Default)]
+pub struct AuditEventFilter {
+    pub event_type: Option<AuditEventType>,
+    pub machine_id: Option<String>,
+    pub since: Option<DateTime<Utc>>,
+    pub limit: usize,
 }
 
 /// Main storage handle
@@ -231,6 +346,78 @@ impl VcStore {
         Ok(())
     }
 
+    /// Insert a single audit event
+    pub fn insert_audit_event(&self, event: &AuditEvent) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let details_json = serde_json::to_string(&event.details)?;
+        conn.execute(
+            r#"
+            INSERT INTO audit_events (ts, event_type, actor, machine_id, action, result, details_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            "#,
+            duckdb::params![
+                event.ts.to_rfc3339(),
+                event.event_type.as_str(),
+                event.actor,
+                event.machine_id,
+                event.action,
+                event.result.as_str(),
+                details_json
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// List audit events with optional filters
+    pub fn list_audit_events(
+        &self,
+        filter: &AuditEventFilter,
+    ) -> Result<Vec<serde_json::Value>, StoreError> {
+        let mut clauses: Vec<String> = Vec::new();
+
+        if let Some(event_type) = filter.event_type {
+            clauses.push(format!(
+                "event_type = '{}'",
+                escape_sql_literal(event_type.as_str())
+            ));
+        }
+
+        if let Some(machine_id) = &filter.machine_id {
+            clauses.push(format!(
+                "machine_id = '{}'",
+                escape_sql_literal(machine_id)
+            ));
+        }
+
+        if let Some(since) = filter.since {
+            clauses.push(format!("ts >= '{}'", since.to_rfc3339()));
+        }
+
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+
+        let limit = clamp_audit_limit(filter.limit);
+        let sql = format!(
+            "SELECT id, ts, event_type, actor, machine_id, action, result, details_json \
+             FROM audit_events {where_sql} ORDER BY ts DESC LIMIT {limit}"
+        );
+
+        self.query_json(&sql)
+    }
+
+    /// Fetch a single audit event by ID
+    pub fn get_audit_event(&self, id: i64) -> Result<Option<serde_json::Value>, StoreError> {
+        let sql = format!(
+            "SELECT id, ts, event_type, actor, machine_id, action, result, details_json \
+             FROM audit_events WHERE id = {id}"
+        );
+        let mut rows = self.query_json(&sql)?;
+        Ok(rows.pop())
+    }
+
     /// Insert or replace rows (handles conflicts via PRIMARY KEY)
     /// Uses INSERT OR REPLACE which replaces the row if a conflict occurs
     pub fn upsert_json(
@@ -298,9 +485,19 @@ fn json_value_to_sql(value: &serde_json::Value) -> Box<dyn duckdb::ToSql> {
     }
 }
 
+fn escape_sql_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn clamp_audit_limit(limit: usize) -> usize {
+    let limit = if limit == 0 { 100 } else { limit };
+    limit.min(10_000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration as ChronoDuration;
 
     // =============================================================================
     // VcStore Basic Tests
@@ -531,6 +728,84 @@ mod tests {
         // Nested object should be serialized as JSON string
         let metadata_str = results[0]["metadata"].as_str().unwrap();
         assert!(metadata_str.contains("nested"));
+    }
+
+    // =============================================================================
+    // Audit Event Tests
+    // =============================================================================
+
+    #[test]
+    fn test_insert_and_list_audit_event() {
+        let store = VcStore::open_memory().unwrap();
+
+        let event = AuditEvent::new(
+            AuditEventType::CollectorRun,
+            "sysmoni",
+            "collect",
+            AuditResult::Success,
+            serde_json::json!({"rows": 10}),
+        )
+        .with_machine_id("local");
+
+        store.insert_audit_event(&event).unwrap();
+
+        let filter = AuditEventFilter {
+            event_type: None,
+            machine_id: None,
+            since: None,
+            limit: 10,
+        };
+
+        let rows = store.list_audit_events(&filter).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["event_type"], "collector_run");
+        assert_eq!(rows[0]["result"], "success");
+    }
+
+    #[test]
+    fn test_audit_event_filters() {
+        let store = VcStore::open_memory().unwrap();
+
+        let event_a = AuditEvent::new(
+            AuditEventType::CollectorRun,
+            "sysmoni",
+            "collect",
+            AuditResult::Success,
+            serde_json::json!({"rows": 5}),
+        )
+        .with_machine_id("alpha");
+        let event_b = AuditEvent::new(
+            AuditEventType::UserCommand,
+            "user",
+            "vc status",
+            AuditResult::Success,
+            serde_json::json!({"args": ["status"]}),
+        )
+        .with_machine_id("beta");
+
+        store.insert_audit_event(&event_a).unwrap();
+        store.insert_audit_event(&event_b).unwrap();
+
+        let filter = AuditEventFilter {
+            event_type: Some(AuditEventType::UserCommand),
+            machine_id: None,
+            since: None,
+            limit: 10,
+        };
+        let rows = store.list_audit_events(&filter).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["event_type"], "user_command");
+
+        let since = Utc::now() - ChronoDuration::minutes(1);
+        let filter = AuditEventFilter {
+            event_type: None,
+            machine_id: Some("alpha".to_string()),
+            since: Some(since),
+            limit: 10,
+        };
+        let rows = store.list_audit_events(&filter).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["machine_id"], "alpha");
     }
 
     #[test]
