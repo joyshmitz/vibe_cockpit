@@ -19,11 +19,19 @@ use crate::Warning;
 pub mod sysmoni;
 pub use sysmoni::SysmoniCollector;
 
+pub mod mcp_mail;
+pub use mcp_mail::AgentMailCollector;
+
+pub mod caut;
+pub use caut::CautCollector;
+
+pub mod cass;
+pub use cass::CassCollector;
+
+pub mod caam;
+pub use caam::CaamCollector;
+
 // Future collectors will be added here as submodules:
-// pub mod caut;
-// pub mod caam;
-// pub mod cass;
-// pub mod mcp_agent_mail;
 // pub mod rch;
 // pub mod rano;
 // pub mod dcg;

@@ -146,6 +146,32 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     PRIMARY KEY (machine_id, session_id)
 );
 
+-- CASS index status (from cass health)
+CREATE TABLE IF NOT EXISTS cass_index_status (
+    machine_id TEXT,
+    collected_at TIMESTAMP,
+    state TEXT,
+    total_sessions INTEGER,
+    last_index_at TIMESTAMP,
+    index_size_bytes BIGINT,
+    freshness_seconds BIGINT,
+    raw_json TEXT,
+    PRIMARY KEY (machine_id, collected_at)
+);
+
+-- CASS statistics snapshots (from cass stats)
+CREATE TABLE IF NOT EXISTS cass_stats_snapshots (
+    machine_id TEXT,
+    collected_at TIMESTAMP,
+    metric_name TEXT,
+    metric_value REAL,
+    dimensions_json TEXT,
+    raw_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_cass_stats_ts ON cass_stats_snapshots(collected_at);
+CREATE INDEX IF NOT EXISTS idx_cass_stats_metric ON cass_stats_snapshots(metric_name);
+
 -- Mail messages (from mcp_agent_mail)
 CREATE TABLE IF NOT EXISTS mail_messages (
     machine_id TEXT,
@@ -162,6 +188,21 @@ CREATE TABLE IF NOT EXISTS mail_messages (
     created_at TIMESTAMP,
     raw_json TEXT,
     PRIMARY KEY (machine_id, message_id)
+);
+
+-- Mail file reservations (from mcp_agent_mail)
+CREATE TABLE IF NOT EXISTS mail_file_reservations (
+    machine_id TEXT,
+    collected_at TIMESTAMP,
+    reservation_id INTEGER,
+    project_id TEXT,
+    path_pattern TEXT,
+    holder TEXT,
+    expires_ts TIMESTAMP,
+    exclusive BOOLEAN,
+    reason TEXT,
+    raw_json TEXT,
+    PRIMARY KEY (machine_id, collected_at, reservation_id)
 );
 
 -- NTM sessions snapshot
