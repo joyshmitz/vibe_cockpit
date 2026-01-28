@@ -149,6 +149,7 @@ impl Default for Guardian {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     // Guardian tests
     #[test]
@@ -316,6 +317,58 @@ mod tests {
         let json = serde_json::to_string(&step).unwrap();
         assert!(json.contains("wait"));
         assert!(json.contains("60"));
+    }
+
+    proptest! {
+        #[test]
+        fn test_trigger_roundtrip(rule_id in "[a-zA-Z0-9_-]{1,32}") {
+            let trigger = PlaybookTrigger::OnAlert { rule_id };
+            let json = serde_json::to_string(&trigger).unwrap();
+            let parsed: PlaybookTrigger = serde_json::from_str(&json).unwrap();
+
+            match parsed {
+                PlaybookTrigger::OnAlert { rule_id: parsed_id } => {
+                    prop_assert_eq!(parsed_id, match trigger {
+                        PlaybookTrigger::OnAlert { rule_id } => rule_id,
+                        _ => unreachable!(),
+                    });
+                }
+                _ => prop_assert!(false, "Expected OnAlert variant"),
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_step_roundtrip(message in ".{1,64}", seconds in 0u64..3600u64) {
+            let step = PlaybookStep::Log { message };
+            let json = serde_json::to_string(&step).unwrap();
+            let parsed: PlaybookStep = serde_json::from_str(&json).unwrap();
+
+            match parsed {
+                PlaybookStep::Log { message: parsed_msg } => {
+                    prop_assert_eq!(parsed_msg, match step {
+                        PlaybookStep::Log { message } => message,
+                        _ => unreachable!(),
+                    });
+                }
+                _ => prop_assert!(false, "Expected Log variant"),
+            }
+
+            let step = PlaybookStep::Wait { seconds };
+            let json = serde_json::to_string(&step).unwrap();
+            let parsed: PlaybookStep = serde_json::from_str(&json).unwrap();
+
+            match parsed {
+                PlaybookStep::Wait { seconds: parsed_secs } => {
+                    prop_assert_eq!(parsed_secs, match step {
+                        PlaybookStep::Wait { seconds } => seconds,
+                        _ => unreachable!(),
+                    });
+                }
+                _ => prop_assert!(false, "Expected Wait variant"),
+            }
+        }
     }
 
     // RunStatus tests
