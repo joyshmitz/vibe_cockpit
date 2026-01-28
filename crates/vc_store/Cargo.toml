@@ -22,3 +22,5 @@ chrono.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
+mockall.workspace = true

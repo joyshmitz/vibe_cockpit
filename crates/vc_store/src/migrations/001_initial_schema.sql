@@ -30,6 +30,24 @@ CREATE TABLE IF NOT EXISTS collector_status (
     PRIMARY KEY (machine_id, collector_name)
 );
 
+-- Fallback system probe samples (always-on baseline)
+CREATE TABLE IF NOT EXISTS sys_fallback_samples (
+    machine_id TEXT,
+    collected_at TIMESTAMP,
+    uptime_seconds BIGINT,
+    load1 REAL,
+    load5 REAL,
+    load15 REAL,
+    mem_total_bytes BIGINT,
+    mem_available_bytes BIGINT,
+    mem_used_bytes BIGINT,
+    swap_total_bytes BIGINT,
+    swap_used_bytes BIGINT,
+    disk_usage_json TEXT, -- [{mount, total, used, avail, pct}]
+    raw_output TEXT,
+    PRIMARY KEY (machine_id, collected_at)
+);
+
 -- System metrics samples
 CREATE TABLE IF NOT EXISTS sys_samples (
     machine_id TEXT,

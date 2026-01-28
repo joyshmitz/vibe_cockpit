@@ -5,6 +5,7 @@ pub mod tables {
     pub const MACHINES: &str = "machines";
     pub const COLLECTOR_STATUS: &str = "collector_status";
     pub const INGESTION_CURSORS: &str = "ingestion_cursors";
+    pub const SYS_FALLBACK_SAMPLES: &str = "sys_fallback_samples";
     pub const SYS_SAMPLES: &str = "sys_samples";
     pub const SYS_TOP_PROCESSES: &str = "sys_top_processes";
     pub const REPO_STATUS_SNAPSHOTS: &str = "repo_status_snapshots";
