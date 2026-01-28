@@ -87,6 +87,7 @@ impl Default for KnowledgeBase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     // KnowledgeBase tests
     #[test]
@@ -115,6 +116,43 @@ mod tests {
         let kb = KnowledgeBase::new();
         let results = kb.search_gotchas("timeout").unwrap();
         assert!(results.is_empty());
+    }
+
+    proptest! {
+        #[test]
+        fn test_solution_roundtrip(
+            title in ".{1,64}",
+            description in ".{0,128}",
+            problem_pattern in ".{1,64}",
+            steps in prop::collection::vec(".{1,32}", 0..8),
+            success_rate in 0.0f64..1.0f64,
+            times_used in 0u32..1000u32
+        ) {
+            let now = Utc::now();
+            let solution = Solution {
+                solution_id: "sol-test".to_string(),
+                title,
+                description,
+                problem_pattern,
+                resolution_steps: steps,
+                success_rate,
+                times_used,
+                source_sessions: vec!["session-a".to_string()],
+                created_at: now,
+                updated_at: now,
+            };
+
+            let json = serde_json::to_string(&solution).unwrap();
+            let parsed: Solution = serde_json::from_str(&json).unwrap();
+
+            prop_assert_eq!(parsed.solution_id, solution.solution_id);
+            prop_assert_eq!(parsed.title, solution.title);
+            prop_assert_eq!(parsed.description, solution.description);
+            prop_assert_eq!(parsed.problem_pattern, solution.problem_pattern);
+            prop_assert_eq!(parsed.resolution_steps, solution.resolution_steps);
+            prop_assert!((parsed.success_rate - solution.success_rate).abs() < f64::EPSILON);
+            prop_assert_eq!(parsed.times_used, solution.times_used);
+        }
     }
 
     // Solution tests
@@ -264,6 +302,38 @@ mod tests {
                 discovered_at: Utc::now(),
             };
             assert_eq!(gotcha.severity, severity);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_gotcha_roundtrip(
+            title in ".{1,64}",
+            description in ".{0,128}",
+            symptoms in prop::collection::vec(".{1,32}", 0..8),
+            severity in "low|medium|high|critical",
+            tools in prop::collection::vec(".{1,16}", 0..8)
+        ) {
+            let gotcha = Gotcha {
+                gotcha_id: "gotcha-test".to_string(),
+                title,
+                description,
+                symptoms,
+                workaround: None,
+                severity,
+                affected_tools: tools,
+                discovered_at: Utc::now(),
+            };
+
+            let json = serde_json::to_string(&gotcha).unwrap();
+            let parsed: Gotcha = serde_json::from_str(&json).unwrap();
+
+            prop_assert_eq!(parsed.gotcha_id, gotcha.gotcha_id);
+            prop_assert_eq!(parsed.title, gotcha.title);
+            prop_assert_eq!(parsed.description, gotcha.description);
+            prop_assert_eq!(parsed.symptoms, gotcha.symptoms);
+            prop_assert_eq!(parsed.severity, gotcha.severity);
+            prop_assert_eq!(parsed.affected_tools, gotcha.affected_tools);
         }
     }
 
