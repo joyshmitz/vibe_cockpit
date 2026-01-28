@@ -40,6 +40,9 @@ pub use rano::RanoCollector;
 pub mod dcg;
 pub use dcg::DcgCollector;
 
+pub mod pt;
+pub use pt::PtCollector;
+
 pub mod beads;
 pub use beads::BeadsCollector;
 
