@@ -71,10 +71,12 @@ res_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM file_reservations;")
 assert_eq "1" "$res_count" "file_reservations table should have 1 row"
 
 # Test 5: Invoke vc collect for mcp_agent_mail (best-effort)
-collect_output=$(run_vc_or_skip collect --collector mcp_agent_mail 2>&1) || {
+run_vc_or_skip collect --collector mcp_agent_mail 2>&1 || {
+    collect_output="$VC_LAST_OUTPUT"
     test_warn "mcp_agent_mail collector invocation returned non-zero"
     test_warn "$collect_output"
 }
+collect_output="$VC_LAST_OUTPUT"
 TEST_ASSERTIONS=$((TEST_ASSERTIONS + 1))
 test_info "PASS: vc collect --collector mcp_agent_mail invoked"
 

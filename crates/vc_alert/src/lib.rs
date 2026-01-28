@@ -150,6 +150,61 @@ impl AlertEngine {
                 cooldown_secs: 300,
                 channels: vec!["tui".to_string(), "desktop".to_string()],
             },
+            AlertRule {
+                rule_id: "dcg-critical-block".to_string(),
+                name: "Critical Command Blocked".to_string(),
+                description: Some("Alert when dcg blocks a critical severity command".to_string()),
+                severity: Severity::Critical,
+                enabled: true,
+                condition: AlertCondition::Pattern {
+                    table: "dcg_events".to_string(),
+                    column: "severity".to_string(),
+                    regex: "critical".to_string(),
+                },
+                cooldown_secs: 60,
+                channels: vec!["tui".to_string()],
+            },
+            AlertRule {
+                rule_id: "agent-stuck".to_string(),
+                name: "Agent Appears Stuck".to_string(),
+                description: Some("Alert when no agent activity for 10 minutes".to_string()),
+                severity: Severity::Warning,
+                enabled: true,
+                condition: AlertCondition::Absence {
+                    table: "caut_snapshots".to_string(),
+                    max_age_secs: 600,
+                },
+                cooldown_secs: 600,
+                channels: vec!["tui".to_string()],
+            },
+            AlertRule {
+                rule_id: "rch-queue-pressure".to_string(),
+                name: "Remote Compilation Queue Pressure".to_string(),
+                description: Some("Alert when rch queue depth exceeds threshold".to_string()),
+                severity: Severity::Warning,
+                enabled: true,
+                condition: AlertCondition::Threshold {
+                    query: "SELECT queue_depth FROM rch_metrics ORDER BY collected_at DESC LIMIT 1".to_string(),
+                    operator: ThresholdOp::Gte,
+                    value: 10.0,
+                },
+                cooldown_secs: 300,
+                channels: vec!["tui".to_string()],
+            },
+            AlertRule {
+                rule_id: "memory-critical".to_string(),
+                name: "Memory Usage Critical".to_string(),
+                description: Some("Alert when memory usage exceeds 95%".to_string()),
+                severity: Severity::Critical,
+                enabled: true,
+                condition: AlertCondition::Threshold {
+                    query: "SELECT 100.0 * (1 - CAST(mem_available_bytes AS REAL) / CAST(mem_total_bytes AS REAL)) FROM sys_fallback_samples WHERE collected_at > datetime('now', '-5 minutes') ORDER BY collected_at DESC LIMIT 1".to_string(),
+                    operator: ThresholdOp::Gte,
+                    value: 95.0,
+                },
+                cooldown_secs: 120,
+                channels: vec!["tui".to_string(), "desktop".to_string()],
+            },
         ]
     }
 
@@ -176,6 +231,226 @@ impl AlertEngine {
 impl Default for AlertEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// =============================================================================
+// Channel Implementations
+// =============================================================================
+
+/// TUI channel - sends alerts to the terminal UI via mpsc
+pub struct TuiChannel {
+    tx: tokio::sync::mpsc::Sender<Alert>,
+}
+
+impl TuiChannel {
+    /// Create a new TUI channel with the given sender
+    pub fn new(tx: tokio::sync::mpsc::Sender<Alert>) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait]
+impl AlertChannel for TuiChannel {
+    fn name(&self) -> &str {
+        "tui"
+    }
+
+    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+        self.tx
+            .send(alert.clone())
+            .await
+            .map_err(|e| AlertError::DeliveryFailed(format!("TUI channel send failed: {}", e)))
+    }
+}
+
+/// Webhook channel - sends alerts via HTTP POST
+pub struct WebhookChannel {
+    url: String,
+    client: reqwest::Client,
+}
+
+impl WebhookChannel {
+    /// Create a new webhook channel
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    /// Create with a custom client
+    pub fn with_client(url: impl Into<String>, client: reqwest::Client) -> Self {
+        Self {
+            url: url.into(),
+            client,
+        }
+    }
+}
+
+#[async_trait]
+impl AlertChannel for WebhookChannel {
+    fn name(&self) -> &str {
+        "webhook"
+    }
+
+    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+        let response = self
+            .client
+            .post(&self.url)
+            .json(alert)
+            .send()
+            .await
+            .map_err(|e| AlertError::DeliveryFailed(format!("Webhook request failed: {}", e)))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(AlertError::DeliveryFailed(format!(
+                "Webhook returned error status: {}",
+                response.status()
+            )))
+        }
+    }
+}
+
+/// Log channel - writes alerts to tracing logs (useful for debugging/testing)
+pub struct LogChannel {
+    level: tracing::Level,
+}
+
+impl LogChannel {
+    /// Create a log channel at the specified level
+    pub fn new(level: tracing::Level) -> Self {
+        Self { level }
+    }
+
+    /// Create a warning-level log channel
+    pub fn warning() -> Self {
+        Self::new(tracing::Level::WARN)
+    }
+
+    /// Create an info-level log channel
+    pub fn info() -> Self {
+        Self::new(tracing::Level::INFO)
+    }
+}
+
+impl Default for LogChannel {
+    fn default() -> Self {
+        Self::warning()
+    }
+}
+
+#[async_trait]
+impl AlertChannel for LogChannel {
+    fn name(&self) -> &str {
+        "log"
+    }
+
+    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+        match self.level {
+            tracing::Level::ERROR => {
+                tracing::error!(
+                    rule_id = %alert.rule_id,
+                    severity = ?alert.severity,
+                    title = %alert.title,
+                    message = %alert.message,
+                    "Alert fired"
+                );
+            }
+            tracing::Level::WARN => {
+                tracing::warn!(
+                    rule_id = %alert.rule_id,
+                    severity = ?alert.severity,
+                    title = %alert.title,
+                    message = %alert.message,
+                    "Alert fired"
+                );
+            }
+            _ => {
+                tracing::info!(
+                    rule_id = %alert.rule_id,
+                    severity = ?alert.severity,
+                    title = %alert.title,
+                    message = %alert.message,
+                    "Alert fired"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// In-memory channel for testing - stores alerts in a Vec
+#[derive(Default)]
+pub struct MemoryChannel {
+    alerts: std::sync::Arc<std::sync::Mutex<Vec<Alert>>>,
+}
+
+impl MemoryChannel {
+    /// Create a new memory channel
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get all alerts that have been delivered
+    pub fn alerts(&self) -> Vec<Alert> {
+        self.alerts.lock().unwrap().clone()
+    }
+
+    /// Clear all stored alerts
+    pub fn clear(&self) {
+        self.alerts.lock().unwrap().clear();
+    }
+
+    /// Get count of stored alerts
+    pub fn count(&self) -> usize {
+        self.alerts.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl AlertChannel for MemoryChannel {
+    fn name(&self) -> &str {
+        "memory"
+    }
+
+    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+        self.alerts.lock().unwrap().push(alert.clone());
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Alert Builder
+// =============================================================================
+
+impl Alert {
+    /// Create an alert from a fired rule
+    pub fn from_rule(rule: &AlertRule, message: impl Into<String>) -> Self {
+        Self {
+            id: None,
+            rule_id: rule.rule_id.clone(),
+            fired_at: Utc::now(),
+            severity: rule.severity,
+            title: rule.name.clone(),
+            message: message.into(),
+            machine_id: None,
+            context: serde_json::json!({}),
+        }
+    }
+
+    /// Set the machine ID
+    pub fn with_machine_id(mut self, machine_id: impl Into<String>) -> Self {
+        self.machine_id = Some(machine_id.into());
+        self
+    }
+
+    /// Set the context
+    pub fn with_context(mut self, context: serde_json::Value) -> Self {
+        self.context = context;
+        self
     }
 }
 

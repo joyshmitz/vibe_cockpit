@@ -58,10 +58,12 @@ row_cmd=$(sqlite3 "$DB_PATH" "SELECT cmd FROM events WHERE id = 1;")
 assert_contains "$row_cmd" "git reset --hard" "event command should match"
 
 # Test 4: Invoke vc collect for dcg (best-effort)
-collect_output=$(run_vc_or_skip collect --collector dcg 2>&1) || {
+run_vc_or_skip collect --collector dcg 2>&1 || {
+    collect_output="$VC_LAST_OUTPUT"
     test_warn "dcg collector invocation returned non-zero"
     test_warn "$collect_output"
 }
+collect_output="$VC_LAST_OUTPUT"
 TEST_ASSERTIONS=$((TEST_ASSERTIONS + 1))
 
 test_info "PASS: vc collect --collector dcg invoked"

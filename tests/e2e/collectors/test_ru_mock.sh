@@ -114,9 +114,11 @@ assert_json_field "$mock_status" ".branch" "main" "Branch should be main"
 
 # Test 3: Run ru collector
 test_info "Test 3: Running ru collector"
-collect_output=$(run_vc_or_skip collect --collector ru 2>&1) || {
+run_vc_or_skip collect --collector ru 2>&1 || {
+    collect_output="$VC_LAST_OUTPUT"
     test_warn "RU collector had issues: $collect_output"
 }
+collect_output="$VC_LAST_OUTPUT"
 TEST_ASSERTIONS=$((TEST_ASSERTIONS + 1))
 test_info "PASS: RU collector completed"
 
@@ -138,9 +140,11 @@ fi
 
 # Test 6: Run ru collector again
 test_info "Test 6: Running ru collector again"
-collect_output2=$(run_vc_or_skip collect --collector ru 2>&1) || {
+run_vc_or_skip collect --collector ru 2>&1 || {
+    collect_output2="$VC_LAST_OUTPUT"
     test_warn "Second ru collect had issues"
 }
+collect_output2="$VC_LAST_OUTPUT"
 TEST_ASSERTIONS=$((TEST_ASSERTIONS + 1))
 test_info "PASS: Second ru collect completed"
 
