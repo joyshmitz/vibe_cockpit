@@ -4382,6 +4382,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vc_config",
+ "vc_store",
 ]
 
 [[package]]

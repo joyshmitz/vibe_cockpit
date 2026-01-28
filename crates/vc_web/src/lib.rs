@@ -14,17 +14,21 @@ use axum::{
     routing::get,
     Router,
 };
+use http::HeaderValue;
 use futures::SinkExt;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use vc_config::WebConfig;
 use vc_query::{FleetOverview, QueryBuilder};
 use vc_store::VcStore;
+use tracing::warn;
 
 /// Web server errors
 #[derive(Error, Debug)]
@@ -97,12 +101,11 @@ impl WebServer {
     }
 
     pub fn router(&self) -> Router {
-        let router = create_router(self.state.clone());
-        if self.config.cors_enabled {
-            router.layer(CorsLayer::permissive())
-        } else {
-            router
+        let mut router = create_router(self.state.clone());
+        if let Some(cors) = build_cors_layer(&self.config) {
+            router = router.layer(cors);
         }
+        router
     }
 
     pub async fn run(&self) -> Result<(), WebError> {
@@ -146,9 +149,59 @@ fn default_limit() -> usize {
     50
 }
 
+fn build_cors_layer(config: &WebConfig) -> Option<CorsLayer> {
+    if !config.cors_enabled {
+        return None;
+    }
+
+    let mut layer = CorsLayer::new()
+        .allow_methods(Any)
+        .allow_headers(Any)
+        .expose_headers(Any);
+
+    if config
+        .cors_origins
+        .iter()
+        .any(|origin| origin.trim() == "*")
+    {
+        return Some(layer.allow_origin(Any));
+    }
+
+    let mut origins = Vec::new();
+    for origin in &config.cors_origins {
+        match HeaderValue::from_str(origin) {
+            Ok(value) => origins.push(value),
+            Err(_) => warn!(origin = %origin, "Invalid CORS origin; skipping"),
+        }
+    }
+
+    if origins.is_empty() {
+        Some(layer.allow_origin(Any))
+    } else {
+        Some(layer.allow_origin(AllowOrigin::list(origins)))
+    }
+}
+
+fn resolve_static_dir() -> Option<String> {
+    if let Ok(dir) = std::env::var("VC_WEB_STATIC_DIR") {
+        if Path::new(&dir).is_dir() {
+            return Some(dir);
+        }
+        warn!(dir = %dir, "VC_WEB_STATIC_DIR does not exist; skipping static files");
+    }
+
+    for candidate in ["web/dist", "web", "public"] {
+        if Path::new(candidate).is_dir() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
 /// Create the router with all routes
 pub fn create_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let router = Router::new()
         // Health and overview
         .route("/api/health", get(health_handler))
         .route("/api/overview", get(overview_handler))
@@ -173,7 +226,13 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/ws", get(ws_handler))
         // Middleware
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state);
+
+    if let Some(dir) = resolve_static_dir() {
+        router.fallback_service(ServeDir::new(dir).append_index_html_on_directories(true))
+    } else {
+        router
+    }
 }
 
 // =============================================================================
@@ -727,10 +786,21 @@ mod tests {
     #[tokio::test]
     async fn test_machine_collectors_endpoint() {
         let state = test_state();
+        state
+            .store
+            .insert_json(
+                "collector_status",
+                &serde_json::json!({
+                    "machine_id": "machine-1",
+                    "collector_name": "sysmoni",
+                    "status": "ok"
+                }),
+            )
+            .unwrap();
         let app = create_router(state);
 
         let request = Request::builder()
-            .uri("/api/machines/test-machine/collectors")
+            .uri("/api/machines/machine-1/collectors")
             .body(Body::empty())
             .unwrap();
 
@@ -740,6 +810,9 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("collectors").is_some());
+        let collectors = json["collectors"].as_array().unwrap();
+        assert_eq!(collectors.len(), 1);
+        assert_eq!(collectors[0]["collector_name"], "sysmoni");
     }
 
     #[tokio::test]
@@ -782,6 +855,19 @@ mod tests {
     #[tokio::test]
     async fn test_alert_rules_endpoint() {
         let state = test_state();
+        state
+            .store
+            .insert_json(
+                "alert_rules",
+                &serde_json::json!({
+                    "rule_id": "rule-1",
+                    "name": "CPU High",
+                    "severity": "warning",
+                    "condition_type": "threshold",
+                    "condition_config": "{\"metric\":\"cpu\"}"
+                }),
+            )
+            .unwrap();
         let app = create_router(state);
 
         let request = Request::builder()
@@ -795,6 +881,9 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("rules").is_some());
+        let rules = json["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["rule_id"], "rule-1");
     }
 
     #[tokio::test]
@@ -891,6 +980,18 @@ mod tests {
     #[tokio::test]
     async fn test_guardian_pending_endpoint() {
         let state = test_state();
+        state
+            .store
+            .insert_json(
+                "guardian_runs",
+                &serde_json::json!({
+                    "id": 42,
+                    "playbook_id": "rate-limit-switch",
+                    "started_at": "2026-01-28T12:00:00Z",
+                    "status": "pending_approval"
+                }),
+            )
+            .unwrap();
         let app = create_router(state);
 
         let request = Request::builder()
@@ -904,6 +1005,9 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("pending").is_some());
+        let pending = json["pending"].as_array().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["id"], 42);
     }
 
     #[tokio::test]

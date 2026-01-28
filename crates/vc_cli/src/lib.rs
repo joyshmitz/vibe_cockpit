@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use vc_config::VcConfig;
 use vc_store::{AuditEventFilter, AuditEventType, VcStore};
+use std::sync::Arc;
 
 pub mod robot;
 
@@ -163,6 +164,12 @@ pub enum Commands {
     Audit {
         #[command(subcommand)]
         command: AuditCommands,
+    },
+
+    /// Machine inventory management
+    Machines {
+        #[command(subcommand)]
+        command: MachineCommands,
     },
 
     /// Query the database with guardrails
@@ -351,6 +358,65 @@ pub enum AuditCommands {
     },
 }
 
+/// Machine management subcommands
+#[derive(Subcommand, Debug)]
+pub enum MachineCommands {
+    /// List all registered machines
+    List {
+        /// Filter by status (online, offline, unknown)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Filter by tags (comma-separated)
+        #[arg(long)]
+        tags: Option<String>,
+
+        /// Show only enabled machines
+        #[arg(long)]
+        enabled: Option<bool>,
+    },
+
+    /// Show details for a specific machine
+    Show {
+        /// Machine ID
+        id: String,
+    },
+
+    /// Add a new machine
+    Add {
+        /// Machine ID
+        id: String,
+
+        /// SSH connection string (user@host)
+        #[arg(long)]
+        ssh: Option<String>,
+
+        /// SSH port
+        #[arg(long, default_value = "22")]
+        port: u16,
+
+        /// Tags (comma-separated)
+        #[arg(long)]
+        tags: Option<String>,
+    },
+
+    /// Probe a machine for available tools
+    Probe {
+        /// Machine ID
+        id: String,
+    },
+
+    /// Update machine status
+    Enable {
+        /// Machine ID
+        id: String,
+
+        /// Enable or disable
+        #[arg(long)]
+        enabled: bool,
+    },
+}
+
 impl Cli {
     /// Run the CLI
     pub async fn run(self) -> Result<(), CliError> {
@@ -393,9 +459,20 @@ impl Cli {
                         println!("{}", output.to_json_pretty());
                     }
                     RobotCommands::Machines => {
+                        let store = Arc::new(open_store(self.config.as_ref())?);
+                        let config = match &self.config {
+                            Some(path) => VcConfig::load_with_env(path)?,
+                            None => VcConfig::discover_with_env()?,
+                        };
+                        let registry = vc_collect::machine::MachineRegistry::new(store);
+                        let _ = registry.load_from_config(&config);
+                        let machines = registry.list_machines(None).unwrap_or_default();
                         let output = robot::RobotEnvelope::new(
                             "vc.robot.machines.v1",
-                            serde_json::json!({ "machines": [], "warning": "not yet implemented" }),
+                            serde_json::json!({
+                                "machines": machines,
+                                "total": machines.len(),
+                            }),
                         );
                         println!("{}", output.to_json_pretty());
                     }
@@ -449,6 +526,90 @@ impl Cli {
                                 "Audit event not found: {id}"
                             )));
                         }
+                    }
+                }
+            }
+            Commands::Machines { command } => {
+                let store = Arc::new(open_store(self.config.as_ref())?);
+                let config = match &self.config {
+                    Some(path) => VcConfig::load_with_env(path)?,
+                    None => VcConfig::discover_with_env()?,
+                };
+                let registry = vc_collect::machine::MachineRegistry::new(store);
+                let _ = registry.load_from_config(&config);
+
+                match command {
+                    MachineCommands::List { status, tags, enabled } => {
+                        let status_filter = status.as_ref().and_then(|s| match s.to_lowercase().as_str() {
+                            "online" => Some(vc_collect::machine::MachineStatus::Online),
+                            "offline" => Some(vc_collect::machine::MachineStatus::Offline),
+                            "unknown" => Some(vc_collect::machine::MachineStatus::Unknown),
+                            _ => None,
+                        });
+                        let tags_filter = tags.as_ref().map(|t| {
+                            t.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>()
+                        });
+                        let filter = vc_collect::machine::MachineFilter {
+                            status: status_filter,
+                            tags: tags_filter,
+                            is_local: None,
+                            enabled,
+                        };
+                        let machines = registry.list_machines(Some(filter)).unwrap_or_default();
+                        print_output(&machines, self.format);
+                    }
+                    MachineCommands::Show { id } => {
+                        match registry.get_machine(&id) {
+                            Ok(Some(machine)) => print_output(&machine, self.format),
+                            Ok(None) => return Err(CliError::CommandFailed(format!("Machine not found: {id}"))),
+                            Err(e) => return Err(CliError::CommandFailed(format!("Error fetching machine: {e}"))),
+                        }
+                    }
+                    MachineCommands::Add { id, ssh, port, tags } => {
+                        // Parse SSH string (user@host)
+                        let (ssh_user, ssh_host) = if let Some(ssh) = ssh {
+                            if let Some((user, host)) = ssh.split_once('@') {
+                                (Some(user.to_string()), Some(host.to_string()))
+                            } else {
+                                (Some("ubuntu".to_string()), Some(ssh))
+                            }
+                        } else {
+                            (None, None)
+                        };
+                        let tags_vec = tags.map(|t| t.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>()).unwrap_or_default();
+                        let is_local = ssh_host.is_none();
+
+                        let machine = vc_collect::machine::Machine {
+                            machine_id: id.clone(),
+                            hostname: ssh_host.clone().unwrap_or_else(|| id.clone()),
+                            display_name: Some(id.clone()),
+                            ssh_host,
+                            ssh_user,
+                            ssh_key_path: None,
+                            ssh_port: port,
+                            is_local,
+                            os_type: None,
+                            arch: None,
+                            added_at: Some(chrono::Utc::now().to_rfc3339()),
+                            last_seen_at: None,
+                            last_probe_at: None,
+                            status: vc_collect::machine::MachineStatus::Unknown,
+                            tags: tags_vec,
+                            metadata: None,
+                            enabled: true,
+                        };
+                        println!("Machine added: {}", id);
+                        print_output(&machine, self.format);
+                    }
+                    MachineCommands::Probe { id } => {
+                        println!("Probing machine {} for available tools...", id);
+                        // Tool probing will be implemented in bd-3nb.3
+                        println!("Tool probing not yet implemented. See bd-3nb.3.");
+                    }
+                    MachineCommands::Enable { id, enabled } => {
+                        println!("Setting machine {} enabled={}", id, enabled);
+                        // This would update the machine's enabled status in the database
+                        println!("Machine enable/disable not yet fully implemented.");
                     }
                 }
             }
