@@ -6,10 +6,8 @@
 //! - Fleet orchestration commands
 //! - Approval workflow
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use thiserror::Error;
 
 /// Guardian errors
@@ -152,6 +150,7 @@ impl Default for Guardian {
 mod tests {
     use super::*;
 
+    // Guardian tests
     #[test]
     fn test_default_playbooks() {
         let guardian = Guardian::new();
@@ -163,5 +162,282 @@ mod tests {
         let guardian = Guardian::new();
         let playbook = guardian.get_playbook("rate-limit-switch");
         assert!(playbook.is_some());
+    }
+
+    #[test]
+    fn test_get_playbook_not_found() {
+        let guardian = Guardian::new();
+        let playbook = guardian.get_playbook("nonexistent");
+        assert!(playbook.is_none());
+    }
+
+    #[test]
+    fn test_guardian_default() {
+        let guardian = Guardian::default();
+        assert!(!guardian.playbooks().is_empty());
+    }
+
+    // Playbook tests
+    #[test]
+    fn test_playbook_creation() {
+        let playbook = Playbook {
+            playbook_id: "test-playbook".to_string(),
+            name: "Test Playbook".to_string(),
+            description: "A test playbook".to_string(),
+            trigger: PlaybookTrigger::Manual,
+            steps: vec![],
+            requires_approval: false,
+            max_runs_per_hour: 10,
+            enabled: true,
+        };
+        assert_eq!(playbook.playbook_id, "test-playbook");
+        assert!(playbook.enabled);
+        assert!(playbook.steps.is_empty());
+    }
+
+    #[test]
+    fn test_playbook_with_steps() {
+        let playbook = Playbook {
+            playbook_id: "multi-step".to_string(),
+            name: "Multi-Step".to_string(),
+            description: "Has multiple steps".to_string(),
+            trigger: PlaybookTrigger::Manual,
+            steps: vec![
+                PlaybookStep::Log { message: "Starting".to_string() },
+                PlaybookStep::Wait { seconds: 5 },
+                PlaybookStep::Log { message: "Done".to_string() },
+            ],
+            requires_approval: true,
+            max_runs_per_hour: 5,
+            enabled: true,
+        };
+        assert_eq!(playbook.steps.len(), 3);
+        assert!(playbook.requires_approval);
+    }
+
+    #[test]
+    fn test_playbook_serialization() {
+        let playbook = Playbook {
+            playbook_id: "serialize-test".to_string(),
+            name: "Serialize Test".to_string(),
+            description: "Test serialization".to_string(),
+            trigger: PlaybookTrigger::Manual,
+            steps: vec![PlaybookStep::Log { message: "hello".to_string() }],
+            requires_approval: false,
+            max_runs_per_hour: 1,
+            enabled: true,
+        };
+
+        let json = serde_json::to_string(&playbook).unwrap();
+        let parsed: Playbook = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.playbook_id, playbook.playbook_id);
+        assert_eq!(parsed.steps.len(), 1);
+    }
+
+    // PlaybookTrigger tests
+    #[test]
+    fn test_trigger_manual() {
+        let trigger = PlaybookTrigger::Manual;
+        let json = serde_json::to_string(&trigger).unwrap();
+        assert!(json.contains("manual"));
+    }
+
+    #[test]
+    fn test_trigger_on_alert() {
+        let trigger = PlaybookTrigger::OnAlert {
+            rule_id: "test-rule".to_string(),
+        };
+        let json = serde_json::to_string(&trigger).unwrap();
+        assert!(json.contains("on_alert"));
+        assert!(json.contains("test-rule"));
+    }
+
+    #[test]
+    fn test_trigger_on_threshold() {
+        let trigger = PlaybookTrigger::OnThreshold {
+            query: "SELECT 1".to_string(),
+            operator: "gte".to_string(),
+            value: 90.0,
+        };
+        let json = serde_json::to_string(&trigger).unwrap();
+        assert!(json.contains("on_threshold"));
+        assert!(json.contains("SELECT 1"));
+    }
+
+    // PlaybookStep tests
+    #[test]
+    fn test_step_log() {
+        let step = PlaybookStep::Log {
+            message: "Test message".to_string(),
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(json.contains("log"));
+        assert!(json.contains("Test message"));
+    }
+
+    #[test]
+    fn test_step_command() {
+        let step = PlaybookStep::Command {
+            cmd: "caam".to_string(),
+            args: vec!["switch".to_string(), "--strategy".to_string(), "least_used".to_string()],
+            timeout_secs: 30,
+            allow_failure: false,
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(json.contains("command"));
+        assert!(json.contains("caam"));
+    }
+
+    #[test]
+    fn test_step_switch_account() {
+        let step = PlaybookStep::SwitchAccount {
+            program: "claude-code".to_string(),
+            strategy: "round_robin".to_string(),
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(json.contains("switch_account"));
+        assert!(json.contains("claude-code"));
+    }
+
+    #[test]
+    fn test_step_notify() {
+        let step = PlaybookStep::Notify {
+            channel: "slack".to_string(),
+            message: "Alert triggered".to_string(),
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(json.contains("notify"));
+        assert!(json.contains("slack"));
+    }
+
+    #[test]
+    fn test_step_wait() {
+        let step = PlaybookStep::Wait { seconds: 60 };
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(json.contains("wait"));
+        assert!(json.contains("60"));
+    }
+
+    // RunStatus tests
+    #[test]
+    fn test_run_status_variants() {
+        assert_ne!(RunStatus::Running, RunStatus::Success);
+        assert_ne!(RunStatus::Failed, RunStatus::Aborted);
+        assert_ne!(RunStatus::PendingApproval, RunStatus::Running);
+    }
+
+    #[test]
+    fn test_run_status_serialization() {
+        let statuses = [
+            (RunStatus::Running, "running"),
+            (RunStatus::Success, "success"),
+            (RunStatus::Failed, "failed"),
+            (RunStatus::Aborted, "aborted"),
+            (RunStatus::PendingApproval, "pendingapproval"),
+        ];
+
+        for (status, expected) in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            assert!(json.to_lowercase().contains(expected), "Expected {} in {}", expected, json);
+        }
+    }
+
+    // PlaybookRun tests
+    #[test]
+    fn test_playbook_run_creation() {
+        let run = PlaybookRun {
+            id: 1,
+            playbook_id: "test".to_string(),
+            started_at: Utc::now(),
+            completed_at: None,
+            status: RunStatus::Running,
+            steps_completed: 0,
+            steps_total: 3,
+            error_message: None,
+        };
+        assert_eq!(run.id, 1);
+        assert_eq!(run.status, RunStatus::Running);
+        assert!(run.completed_at.is_none());
+    }
+
+    #[test]
+    fn test_playbook_run_completed() {
+        let now = Utc::now();
+        let run = PlaybookRun {
+            id: 2,
+            playbook_id: "test".to_string(),
+            started_at: now,
+            completed_at: Some(now),
+            status: RunStatus::Success,
+            steps_completed: 3,
+            steps_total: 3,
+            error_message: None,
+        };
+        assert!(run.completed_at.is_some());
+        assert_eq!(run.steps_completed, run.steps_total);
+    }
+
+    #[test]
+    fn test_playbook_run_failed() {
+        let run = PlaybookRun {
+            id: 3,
+            playbook_id: "test".to_string(),
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            status: RunStatus::Failed,
+            steps_completed: 1,
+            steps_total: 3,
+            error_message: Some("Command timed out".to_string()),
+        };
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(run.error_message.is_some());
+        assert!(run.error_message.unwrap().contains("timed out"));
+    }
+
+    #[test]
+    fn test_playbook_run_serialization() {
+        let run = PlaybookRun {
+            id: 4,
+            playbook_id: "serialize-test".to_string(),
+            started_at: Utc::now(),
+            completed_at: None,
+            status: RunStatus::PendingApproval,
+            steps_completed: 0,
+            steps_total: 2,
+            error_message: None,
+        };
+
+        let json = serde_json::to_string(&run).unwrap();
+        let parsed: PlaybookRun = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, run.id);
+        assert_eq!(parsed.playbook_id, run.playbook_id);
+        assert_eq!(parsed.status, run.status);
+    }
+
+    // GuardianError tests
+    #[test]
+    fn test_error_playbook_not_found() {
+        let err = GuardianError::PlaybookNotFound("missing".to_string());
+        assert!(err.to_string().contains("Playbook not found"));
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn test_error_execution_failed() {
+        let err = GuardianError::ExecutionFailed("timeout".to_string());
+        assert!(err.to_string().contains("Execution failed"));
+    }
+
+    #[test]
+    fn test_error_rate_limited() {
+        let err = GuardianError::RateLimited(5);
+        assert!(err.to_string().contains("Rate limited"));
+        assert!(err.to_string().contains("5"));
+    }
+
+    #[test]
+    fn test_error_approval_required() {
+        let err = GuardianError::ApprovalRequired;
+        assert!(err.to_string().contains("Approval required"));
     }
 }
