@@ -23,6 +23,7 @@ chrono.workspace = true
 regex.workspace = true
 anyhow.workspace = true
 dashmap.workspace = true
+futures.workspace = true
 russh.workspace = true
 russh-keys.workspace = true
 

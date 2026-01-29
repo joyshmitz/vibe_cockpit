@@ -15,6 +15,8 @@ pub mod tables {
     pub const AGENT_SESSIONS: &str = "agent_sessions";
     pub const MAIL_MESSAGES: &str = "mail_messages";
     pub const NTM_SESSIONS_SNAPSHOT: &str = "ntm_sessions_snapshot";
+    pub const NTM_ACTIVITY_SNAPSHOT: &str = "ntm_activity_snapshot";
+    pub const NTM_AGENT_SNAPSHOT: &str = "ntm_agent_snapshot";
     pub const RCH_METRICS: &str = "rch_metrics";
     pub const NET_EVENTS: &str = "net_events";
     pub const DCG_EVENTS: &str = "dcg_events";
@@ -31,6 +33,13 @@ pub mod tables {
     pub const GUARDIAN_PLAYBOOKS: &str = "guardian_playbooks";
     pub const GUARDIAN_RUNS: &str = "guardian_runs";
     pub const RETENTION_POLICIES: &str = "retention_policies";
+    pub const AGENT_DNA: &str = "agent_dna";
+    pub const DNA_HISTORY: &str = "dna_history";
+    pub const EXPERIMENTS: &str = "experiments";
+    pub const EXPERIMENT_VARIANTS: &str = "experiment_variants";
+    pub const EXPERIMENT_ASSIGNMENTS: &str = "experiment_assignments";
+    pub const EXPERIMENT_OBSERVATIONS: &str = "experiment_observations";
+    pub const EXPERIMENT_RESULTS: &str = "experiment_results";
 }
 
 /// Common column names

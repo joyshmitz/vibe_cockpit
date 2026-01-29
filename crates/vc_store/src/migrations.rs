@@ -28,6 +28,21 @@ const MIGRATIONS: &[Migration] = &[
         name: "knowledge_base",
         sql: include_str!("migrations/003_knowledge_base.sql"),
     },
+    Migration {
+        version: 4,
+        name: "agent_dna",
+        sql: include_str!("migrations/004_agent_dna.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "experiments",
+        sql: include_str!("migrations/005_experiments.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "ntm_collector",
+        sql: include_str!("migrations/006_ntm_collector.sql"),
+    },
 ];
 
 /// Run all pending migrations

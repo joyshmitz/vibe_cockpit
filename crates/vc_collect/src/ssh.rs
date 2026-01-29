@@ -4,15 +4,15 @@
 
 use crate::executor::SshConfig;
 use crate::machine::Machine;
+use async_trait::async_trait;
 use dashmap::DashMap;
 use russh::client;
-use russh_keys::key::PrivateKeyWithHashAlg;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::Mutex;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument};
 
 /// SSH-specific errors
 #[derive(Error, Debug)]
@@ -43,6 +43,9 @@ pub enum SshError {
 
     #[error("Session not connected")]
     NotConnected,
+
+    #[error("Russh error: {0}")]
+    RusshError(#[from] russh::Error),
 }
 
 /// Configuration for the SSH runner
@@ -104,6 +107,7 @@ impl SshSession {
 /// SSH client handler for russh
 struct SshHandler;
 
+#[async_trait]
 impl client::Handler for SshHandler {
     type Error = SshError;
 
@@ -316,12 +320,13 @@ impl SshRunner {
         };
 
         // Authenticate
+        let mut handle = handle;
         let authenticated = if let Some(key_path) = &ssh_config.key_path {
-            self.authenticate_with_key(&handle, &ssh_config.user, key_path)
+            self.authenticate_with_key(&mut handle, &ssh_config.user, key_path)
                 .await?
         } else {
-            // Try agent-based auth
-            self.authenticate_with_agent(&handle, &ssh_config.user)
+            // Try default key locations
+            self.authenticate_with_default_keys(&mut handle, &ssh_config.user)
                 .await?
         };
 
@@ -342,7 +347,7 @@ impl SshRunner {
     /// Authenticate using a private key file
     async fn authenticate_with_key(
         &self,
-        handle: &client::Handle<SshHandler>,
+        handle: &mut client::Handle<SshHandler>,
         user: &str,
         key_path: &str,
     ) -> Result<bool, SshError> {
@@ -351,45 +356,23 @@ impl SshRunner {
         let secret_key = russh_keys::load_secret_key(&key_path, None)
             .map_err(|e| SshError::KeyError(format!("Failed to load key {}: {}", key_path, e)))?;
 
-        let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(secret_key), None).map_err(|e| {
-            SshError::KeyError(format!("Failed to create key with hash alg: {}", e))
-        })?;
-
         handle
-            .authenticate_publickey(user, key_with_alg)
+            .authenticate_publickey(user, Arc::new(secret_key))
             .await
-            .map_err(|e| SshError::AuthFailed {
+            .map_err(|_e| SshError::AuthFailed {
                 user: user.to_string(),
                 host: "unknown".to_string(),
             })
     }
 
-    /// Authenticate using SSH agent
-    async fn authenticate_with_agent(
+    /// Authenticate using default SSH keys
+    ///
+    /// Tries common key locations in order: id_ed25519, id_rsa, id_ecdsa
+    async fn authenticate_with_default_keys(
         &self,
-        handle: &client::Handle<SshHandler>,
+        handle: &mut client::Handle<SshHandler>,
         user: &str,
     ) -> Result<bool, SshError> {
-        // Try to connect to SSH agent
-        let agent_path = std::env::var("SSH_AUTH_SOCK").ok();
-
-        if let Some(path) = agent_path {
-            if let Ok(mut agent) = russh_keys::agent::client::AgentClient::connect_uds(&path).await
-            {
-                if let Ok(identities) = agent.request_identities().await {
-                    for identity in identities {
-                        if handle
-                            .authenticate_publickey_with(user, Arc::new(identity), &mut agent)
-                            .await
-                            .is_ok()
-                        {
-                            return Ok(true);
-                        }
-                    }
-                }
-            }
-        }
-
         // Try default key locations
         for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
             let key_path = format!("~/.ssh/{}", key_name);

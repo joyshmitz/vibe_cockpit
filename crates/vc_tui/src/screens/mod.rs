@@ -10,6 +10,7 @@ pub mod alerts;
 pub mod beads;
 pub mod events;
 pub mod guardian;
+pub mod machines;
 pub mod mail;
 pub mod oracle;
 pub mod overview;
@@ -30,6 +31,10 @@ pub use events::{
 pub use guardian::{
     ActiveProtocol, GuardianData, GuardianMode, GuardianRun, GuardianSection, GuardianStatus,
     PendingApproval, ProtocolStatus, RunResult, render_guardian,
+};
+pub use machines::{
+    CollectionEvent, MachineDetail, MachineOnlineStatus, MachineRow, MachineSortField,
+    MachinesData, MachinesViewMode, SystemStats, ToolInfoRow, render_machines,
 };
 pub use mail::{MailData, MailPane, MessageInfo, ThreadSummary, render_mail};
 pub use oracle::{

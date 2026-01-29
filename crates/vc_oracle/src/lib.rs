@@ -2,6 +2,7 @@
 //!
 //! This crate provides:
 //! - Rate limit forecasting
+//! - Agent DNA fingerprinting and behavioral analysis
 //! - Pattern recognition
 //! - Anomaly detection
 //! - Predictive recommendations
@@ -11,7 +12,24 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
+pub mod dna;
+pub mod evolution;
+pub mod experiment;
 pub mod rate_limit;
+
+pub use dna::{
+    AgentDna, Anomaly, DnaComparison, DnaComputer, DnaComputeConfig, DnaError, DnaHistory,
+    DnaStats, Difference, TimeRange, cosine_similarity, mean_stddev,
+};
+pub use evolution::{
+    EvolutionConfig, EvolutionError, EvolutionManager, EvolutionResult, FitnessMetrics,
+    FitnessWeights, Gene, GenerationStats, Genome, GenomeTemplate, Individual,
+};
+pub use experiment::{
+    Assignment, Experiment, ExperimentAnalyzer, ExperimentConfig, ExperimentError,
+    ExperimentManager, ExperimentResults, ExperimentStatus, Metric, MetricCollector, Observation,
+    Variant, VariantComparison, VariantConfig, VariantStats,
+};
 pub use rate_limit::{
     AccountKey, ForecastConfig, RateLimitForecaster, UsageSample, rank_alternative_accounts,
 };

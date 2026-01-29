@@ -26,10 +26,15 @@ pub mod collectors;
 pub mod executor;
 pub mod machine;
 pub mod probe;
+pub mod remote;
 pub mod ssh;
 
 pub use machine::{Machine, MachineFilter, MachineRegistry, MachineStatus, ToolInfo};
 pub use probe::{ProbeResult, TOOL_SPECS, ToolProber, ToolSpec};
+pub use remote::{
+    CollectionSummary, MachineCollectResult, MultiMachineCollector, RemoteCollectError,
+    RemoteCollector, RemoteCollectorConfig,
+};
 pub use ssh::{CommandOutput as SshCommandOutput, PoolStats, SshError, SshRunner, SshRunnerConfig};
 
 /// Collection errors
@@ -564,6 +569,7 @@ impl CollectorRegistry {
         registry.register(Arc::new(collectors::DcgCollector::new()));
         registry.register(Arc::new(collectors::BeadsCollector));
         registry.register(Arc::new(collectors::GhCollector));
+        registry.register(Arc::new(collectors::NtmCollector::new()));
 
         // More collectors will be registered here as they're implemented
         // etc.

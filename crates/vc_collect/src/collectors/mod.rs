@@ -49,12 +49,13 @@ pub use beads::BeadsCollector;
 pub mod github;
 pub use github::GhCollector;
 
+pub mod ntm;
+pub use ntm::NtmCollector;
+
 // Future collectors will be added here as submodules:
-// pub mod pt;
 // pub mod bv_br;
 // pub mod afsc;
 // pub mod cloud_benchmarker;
-// pub mod ntm;
 
 /// Dummy collector for testing the collector infrastructure
 ///

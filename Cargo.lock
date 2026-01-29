@@ -5179,6 +5179,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "futures",
  "mockall",
  "proptest",
  "regex",
