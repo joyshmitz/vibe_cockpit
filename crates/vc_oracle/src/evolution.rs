@@ -590,7 +590,20 @@ impl EvolutionManager {
     }
 
     /// Perform tournament selection
+    ///
+    /// # Panics
+    /// Panics if population is empty or tournament_size is 0.
+    /// Caller must ensure population is non-empty before calling.
     fn tournament_select(&mut self) -> Individual {
+        assert!(
+            !self.population.is_empty(),
+            "cannot perform tournament selection on empty population"
+        );
+        assert!(
+            self.config.tournament_size > 0,
+            "tournament_size must be greater than 0"
+        );
+
         let mut best: Option<&Individual> = None;
 
         for _ in 0..self.config.tournament_size {
@@ -605,7 +618,7 @@ impl EvolutionManager {
             }
         }
 
-        best.unwrap().clone()
+        best.expect("best should be Some after non-zero tournament iterations").clone()
     }
 
     /// Create the next generation

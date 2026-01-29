@@ -231,7 +231,13 @@ impl Executor {
             .parse()
             .map_err(|e| CollectError::ParseError(format!("Invalid mtime: {e}")))?;
 
-        let mtime = DateTime::from_timestamp(mtime_secs, 0).unwrap_or_else(Utc::now);
+        let mtime = DateTime::from_timestamp(mtime_secs, 0).unwrap_or_else(|| {
+            warn!(
+                mtime_secs = mtime_secs,
+                "Invalid mtime timestamp, using Unix epoch"
+            );
+            DateTime::UNIX_EPOCH
+        });
 
         Ok(FileStat {
             inode,

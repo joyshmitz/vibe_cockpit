@@ -111,6 +111,7 @@ impl CloudBenchCollector {
     }
 
     /// Calculate drift from baseline
+    #[allow(dead_code)] // Reserved for future anomaly detection in collect()
     fn calculate_drift(current: f64, baseline: f64) -> f64 {
         if baseline == 0.0 {
             return 0.0;
@@ -119,6 +120,7 @@ impl CloudBenchCollector {
     }
 
     /// Check if drift exceeds threshold
+    #[allow(dead_code)] // Reserved for future anomaly detection in collect()
     fn is_anomaly(drift: f64, threshold: f64) -> bool {
         drift.abs() > threshold
     }

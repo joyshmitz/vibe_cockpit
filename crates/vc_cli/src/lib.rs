@@ -887,7 +887,7 @@ impl Cli {
                 }
             }
             Commands::Config { command } => {
-                use vc_config::{LintResult, LintSeverity};
+                use vc_config::LintSeverity;
 
                 match command {
                     ConfigCommands::Lint {

@@ -140,7 +140,7 @@ impl Machine {
             "last_seen_at": self.last_seen_at,
             "last_probe_at": self.last_probe_at,
             "status": self.status.as_str(),
-            "tags": serde_json::Value::Null,
+            "tags": &self.tags,
             "metadata": if metadata.is_null() { serde_json::Value::Null } else { metadata },
             "enabled": self.enabled,
         })

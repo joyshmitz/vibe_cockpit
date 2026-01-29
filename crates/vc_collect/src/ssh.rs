@@ -93,7 +93,9 @@ impl CommandOutput {
 /// SSH session wrapper with connection state
 struct SshSession {
     handle: client::Handle<SshHandler>,
+    #[allow(dead_code)] // Reserved for reconnection logic
     config: SshConfig,
+    #[allow(dead_code)] // Reserved for session timeout detection
     connected_at: std::time::Instant,
 }
 

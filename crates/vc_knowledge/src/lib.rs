@@ -604,6 +604,8 @@ pub struct Gotcha {
 
 /// Knowledge base manager (legacy interface)
 pub struct KnowledgeBase {
+    /// Reserved for future persistence implementation
+    #[allow(dead_code)]
     store: Option<Arc<VcStore>>,
 }
 

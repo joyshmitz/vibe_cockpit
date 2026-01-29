@@ -377,7 +377,6 @@ fn hash_string(s: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_beads_collector_name() {

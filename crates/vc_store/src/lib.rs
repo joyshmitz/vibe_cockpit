@@ -359,12 +359,23 @@ impl VcStore {
     pub fn insert_audit_event(&self, event: &AuditEvent) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap();
         let details_json = serde_json::to_string(&event.details)?;
+
+        // Get next ID (DuckDB doesn't auto-increment INTEGER PRIMARY KEY like SQLite)
+        let next_id: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM audit_events",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+
         conn.execute(
             r#"
-            INSERT INTO audit_events (ts, event_type, actor, machine_id, action, result, details_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO audit_events (id, ts, event_type, actor, machine_id, action, result, details_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             duckdb::params![
+                next_id,
                 event.ts.to_rfc3339(),
                 event.event_type.as_str(),
                 event.actor,
@@ -517,10 +528,10 @@ mod tests {
     fn test_execute() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test (id INTEGER, name TEXT)")
+            .execute_simple("CREATE TABLE test (id INTEGER, name TEXT)")
             .unwrap();
         store
-            .execute("INSERT INTO test VALUES (1, 'hello')")
+            .execute_simple("INSERT INTO test VALUES (1, 'hello')")
             .unwrap();
 
         let results = store.query_json("SELECT * FROM test").unwrap();
@@ -531,12 +542,12 @@ mod tests {
     fn test_execute_returns_affected_rows() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_affected (id INTEGER, name TEXT)")
+            .execute_simple("CREATE TABLE test_affected (id INTEGER, name TEXT)")
             .unwrap();
 
         // Insert should affect 1 row
         let affected = store
-            .execute("INSERT INTO test_affected VALUES (1, 'a')")
+            .execute_simple("INSERT INTO test_affected VALUES (1, 'a')")
             .unwrap();
         assert_eq!(affected, 1);
 
@@ -664,7 +675,7 @@ mod tests {
     fn test_insert_json_valid_object() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_json_insert (id INTEGER, name TEXT, active BOOLEAN)")
+            .execute_simple("CREATE TABLE test_json_insert (id INTEGER, name TEXT, active BOOLEAN)")
             .unwrap();
 
         let row = serde_json::json!({
@@ -685,7 +696,7 @@ mod tests {
     fn test_insert_json_non_object_error() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_insert (id INTEGER, name TEXT)")
+            .execute_simple("CREATE TABLE test_insert (id INTEGER, name TEXT)")
             .unwrap();
 
         let result = store.insert_json("test_insert", &serde_json::json!(["not", "object"]));
@@ -701,7 +712,7 @@ mod tests {
     #[test]
     fn test_insert_json_string_error() {
         let store = VcStore::open_memory().unwrap();
-        store.execute("CREATE TABLE test_str (id INTEGER)").unwrap();
+        store.execute_simple("CREATE TABLE test_str (id INTEGER)").unwrap();
 
         let result = store.insert_json("test_str", &serde_json::json!("just a string"));
         assert!(result.is_err());
@@ -711,7 +722,7 @@ mod tests {
     fn test_insert_json_null_error() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_null (id INTEGER)")
+            .execute_simple("CREATE TABLE test_null (id INTEGER)")
             .unwrap();
 
         let result = store.insert_json("test_null", &serde_json::Value::Null);
@@ -722,7 +733,7 @@ mod tests {
     fn test_insert_json_with_null_value() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_nullable (id INTEGER, optional_field TEXT)")
+            .execute_simple("CREATE TABLE test_nullable (id INTEGER, optional_field TEXT)")
             .unwrap();
 
         let row = serde_json::json!({
@@ -740,7 +751,7 @@ mod tests {
     fn test_insert_json_with_nested_object() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_nested (id INTEGER, metadata TEXT)")
+            .execute_simple("CREATE TABLE test_nested (id INTEGER, metadata TEXT)")
             .unwrap();
 
         let row = serde_json::json!({
@@ -838,7 +849,7 @@ mod tests {
     fn test_insert_json_with_array_value() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_array (id INTEGER, tags TEXT)")
+            .execute_simple("CREATE TABLE test_array (id INTEGER, tags TEXT)")
             .unwrap();
 
         let row = serde_json::json!({
@@ -862,7 +873,7 @@ mod tests {
     fn test_insert_json_batch_empty() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_batch (id INTEGER, name TEXT)")
+            .execute_simple("CREATE TABLE test_batch (id INTEGER, name TEXT)")
             .unwrap();
 
         let count = store.insert_json_batch("test_batch", &[]).unwrap();
@@ -873,7 +884,7 @@ mod tests {
     fn test_insert_json_batch_multiple() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_batch_multi (id INTEGER, name TEXT)")
+            .execute_simple("CREATE TABLE test_batch_multi (id INTEGER, name TEXT)")
             .unwrap();
 
         let rows = vec![
@@ -901,10 +912,10 @@ mod tests {
     fn test_query_scalar() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_scalar (id INTEGER, value INTEGER)")
+            .execute_simple("CREATE TABLE test_scalar (id INTEGER, value INTEGER)")
             .unwrap();
         store
-            .execute("INSERT INTO test_scalar VALUES (1, 42)")
+            .execute_simple("INSERT INTO test_scalar VALUES (1, 42)")
             .unwrap();
 
         let value: i64 = store
@@ -917,10 +928,10 @@ mod tests {
     fn test_query_scalar_string() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_str_scalar (id INTEGER, name TEXT)")
+            .execute_simple("CREATE TABLE test_str_scalar (id INTEGER, name TEXT)")
             .unwrap();
         store
-            .execute("INSERT INTO test_str_scalar VALUES (1, 'hello')")
+            .execute_simple("INSERT INTO test_str_scalar VALUES (1, 'hello')")
             .unwrap();
 
         let name: String = store
@@ -933,10 +944,10 @@ mod tests {
     fn test_query_scalar_float() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_float (id INTEGER, val DOUBLE)")
+            .execute_simple("CREATE TABLE test_float (id INTEGER, val DOUBLE)")
             .unwrap();
         store
-            .execute("INSERT INTO test_float VALUES (1, 3.14)")
+            .execute_simple("INSERT INTO test_float VALUES (1, 3.14)")
             .unwrap();
 
         let val: f64 = store
@@ -949,7 +960,7 @@ mod tests {
     fn test_query_scalar_no_rows() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_empty (id INTEGER)")
+            .execute_simple("CREATE TABLE test_empty (id INTEGER)")
             .unwrap();
 
         let result: Result<i64, _> = store.query_scalar("SELECT id FROM test_empty");
@@ -960,7 +971,7 @@ mod tests {
     fn test_query_json_empty() {
         let store = VcStore::open_memory().unwrap();
         store
-            .execute("CREATE TABLE test_empty_json (id INTEGER)")
+            .execute_simple("CREATE TABLE test_empty_json (id INTEGER)")
             .unwrap();
 
         let results = store.query_json("SELECT * FROM test_empty_json").unwrap();
@@ -1092,7 +1103,7 @@ mod tests {
     fn test_store_error_database_display() {
         // Create a database error by using invalid SQL
         let store = VcStore::open_memory().unwrap();
-        let result = store.execute("INVALID SQL STATEMENT HERE");
+        let result = store.execute_simple("INVALID SQL STATEMENT HERE");
         assert!(result.is_err());
         let err = result.unwrap_err();
         // DatabaseError should format with "Database error: ..."

@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
 use crate::theme::Theme;
@@ -264,15 +264,6 @@ fn render_quick_ref(f: &mut Frame, area: Rect, data: &QuickRefData, selected: bo
     f.render_widget(counts, rows[0]);
 
     // Second row: priority breakdown and epics
-    let priority_text = format!(
-        " P0:{} P1:{} P2:{} P3:{} │ Epics: {}/{} with ready work",
-        data.by_priority[0],
-        data.by_priority[1],
-        data.by_priority[2],
-        data.by_priority[3],
-        data.epics_with_ready,
-        data.total_epics
-    );
     let priority = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(" P0:{}", data.by_priority[0]),
@@ -487,12 +478,14 @@ fn priority_style(priority: u32, theme: &Theme) -> Style {
     }
 }
 
-/// Truncate a string to a maximum length
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+/// Truncate a string to a maximum number of characters (not bytes)
+fn truncate(s: &str, max_chars: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
         s.to_string()
     } else {
-        format!("{}…", &s[..max_len - 1])
+        let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{truncated}…")
     }
 }
 
@@ -548,7 +541,7 @@ mod tests {
     #[test]
     fn test_truncate_long() {
         let result = truncate("hello world this is a long string", 10);
-        assert!(result.len() <= 10);
+        assert!(result.chars().count() <= 10);
         assert!(result.ends_with('…'));
     }
 

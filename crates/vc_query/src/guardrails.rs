@@ -603,9 +603,16 @@ mod tests {
         let sql = validator
             .expand_template("machine_status", &params)
             .unwrap();
-        // The injection should be escaped
+        // The injection should be escaped: ' becomes '' inside the string literal
+        // The malicious text is now safely inside a string literal
         assert!(sql.contains("''"));
-        assert!(!sql.contains("DROP TABLE"));
+        // The string should be properly quoted - original ' is now '' and whole value is in quotes
+        // This means "'; DROP TABLE" becomes "'''; DROP TABLE" (inside single quotes)
+        assert!(sql.contains("'''"));
+        // Verify the injection is properly escaped inside a string literal, not executable
+        // The SQL should look like: ... = '''; DROP TABLE machines; --' ...
+        // NOT like: ... = ''; DROP TABLE machines; --
+        assert!(!sql.contains("= ''; DROP"));
     }
 
     #[test]

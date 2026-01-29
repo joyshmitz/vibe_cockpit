@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Frame,
 };
 
@@ -350,13 +350,12 @@ fn render_builds(f: &mut Frame, area: Rect, data: &RchData, theme: &Theme) {
             };
 
             Row::new(vec![
-                b.time.clone(),
-                b.crate_name.clone(),
-                b.worker.clone(),
-                format!("{:.1}s", b.duration_secs),
-                b.cache_status.label().to_string(),
+                Cell::from(b.time.clone()).style(style),
+                Cell::from(b.crate_name.clone()).style(style),
+                Cell::from(b.worker.clone()).style(style),
+                Cell::from(format!("{:.1}s", b.duration_secs)).style(style),
+                Cell::from(b.cache_status.label()).style(cache_style),
             ])
-            .style(style)
         })
         .collect();
 

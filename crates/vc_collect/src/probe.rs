@@ -7,7 +7,6 @@ use crate::CollectError;
 use crate::executor::Executor;
 use crate::machine::{MachineRegistry, ToolInfo};
 use regex::Regex;
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -171,7 +170,7 @@ impl ToolProber {
         &self,
         machine_id: &str,
         executor: &Executor,
-        registry: &Arc<MachineRegistry>,
+        registry: &MachineRegistry,
     ) -> ProbeResult {
         let mut found_tools = Vec::new();
         let mut errors = Vec::new();

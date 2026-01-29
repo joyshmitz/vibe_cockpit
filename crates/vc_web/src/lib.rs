@@ -10,14 +10,12 @@ use axum::{
     Router,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::get,
 };
-use futures::SinkExt;
-use http::HeaderValue;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::Path as FsPath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -154,7 +152,7 @@ fn build_cors_layer(config: &WebConfig) -> Option<CorsLayer> {
         return None;
     }
 
-    let mut layer = CorsLayer::new()
+    let layer = CorsLayer::new()
         .allow_methods(Any)
         .allow_headers(Any)
         .expose_headers(Any);
@@ -184,14 +182,14 @@ fn build_cors_layer(config: &WebConfig) -> Option<CorsLayer> {
 
 fn resolve_static_dir() -> Option<String> {
     if let Ok(dir) = std::env::var("VC_WEB_STATIC_DIR") {
-        if Path::new(&dir).is_dir() {
+        if FsPath::new(&dir).is_dir() {
             return Some(dir);
         }
         warn!(dir = %dir, "VC_WEB_STATIC_DIR does not exist; skipping static files");
     }
 
     for candidate in ["web/dist", "web", "public"] {
-        if Path::new(candidate).is_dir() {
+        if FsPath::new(candidate).is_dir() {
             return Some(candidate.to_string());
         }
     }
@@ -497,7 +495,7 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>) {
             "uptime_secs": state.start_time.elapsed().as_secs()
         });
         if socket
-            .send(Message::Text(payload.to_string()))
+            .send(Message::Text(payload.to_string().into()))
             .await
             .is_err()
         {
