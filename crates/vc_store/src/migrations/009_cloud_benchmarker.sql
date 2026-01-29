@@ -44,4 +44,4 @@ CREATE TABLE IF NOT EXISTS cloud_bench_history (
 CREATE INDEX IF NOT EXISTS idx_cloud_bench_history_date ON cloud_bench_history(benchmark_date);
 
 -- Index for anomaly detection queries
-CREATE INDEX IF NOT EXISTS idx_cloud_bench_history_anomaly ON cloud_bench_history(machine_id, anomaly_detected) WHERE anomaly_detected = TRUE;
+CREATE INDEX IF NOT EXISTS idx_cloud_bench_history_anomaly ON cloud_bench_history(machine_id, anomaly_detected);
