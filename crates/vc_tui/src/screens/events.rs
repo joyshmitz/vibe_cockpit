@@ -3,11 +3,11 @@
 //! Displays DCG denies, RANO network anomalies, and PT process issues.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
 use crate::theme::Theme;

@@ -41,7 +41,7 @@
 //! }).await?;
 //! ```
 
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -618,7 +618,8 @@ impl EvolutionManager {
             }
         }
 
-        best.expect("best should be Some after non-zero tournament iterations").clone()
+        best.expect("best should be Some after non-zero tournament iterations")
+            .clone()
     }
 
     /// Create the next generation

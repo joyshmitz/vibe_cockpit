@@ -3,11 +3,11 @@
 //! Displays self-healing status, active protocols, pending approvals, and history.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
 use crate::theme::Theme;

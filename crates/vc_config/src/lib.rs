@@ -17,6 +17,9 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::info;
 
+/// Valid log level strings (trace, debug, info, warn, error)
+const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
+
 // =============================================================================
 // Lint Types
 // =============================================================================
@@ -630,12 +633,11 @@ impl VcConfig {
         }
 
         // Validate log level
-        let valid_levels = ["trace", "debug", "info", "warn", "error"];
-        if !valid_levels.contains(&self.global.log_level.to_lowercase().as_str()) {
+        if !VALID_LOG_LEVELS.contains(&self.global.log_level.to_lowercase().as_str()) {
             return Err(ConfigError::ValidationError(format!(
                 "Invalid log_level '{}'. Must be one of: {}",
                 self.global.log_level,
-                valid_levels.join(", ")
+                VALID_LOG_LEVELS.join(", ")
             )));
         }
 
@@ -734,37 +736,42 @@ impl VcConfig {
         // Poll interval must be positive
         if self.global.poll_interval_secs == 0 {
             result.add(
-                LintIssue::error("global.poll_interval_secs", "Poll interval must be greater than 0")
-                    .with_suggestion(LintSuggestion {
-                        description: "Set a reasonable poll interval (e.g., 120 seconds)".to_string(),
-                        path: "global.poll_interval_secs".to_string(),
-                        suggested_value: Some("120".to_string()),
-                    }),
+                LintIssue::error(
+                    "global.poll_interval_secs",
+                    "Poll interval must be greater than 0",
+                )
+                .with_suggestion(LintSuggestion {
+                    description: "Set a reasonable poll interval (e.g., 120 seconds)".to_string(),
+                    path: "global.poll_interval_secs".to_string(),
+                    suggested_value: Some("120".to_string()),
+                }),
             );
         }
 
         // Collector timeout must be positive
         if self.collectors.timeout_secs == 0 {
             result.add(
-                LintIssue::error("collectors.timeout_secs", "Collector timeout must be greater than 0")
-                    .with_suggestion(LintSuggestion {
-                        description: "Set a reasonable timeout (e.g., 30 seconds)".to_string(),
-                        path: "collectors.timeout_secs".to_string(),
-                        suggested_value: Some("30".to_string()),
-                    }),
+                LintIssue::error(
+                    "collectors.timeout_secs",
+                    "Collector timeout must be greater than 0",
+                )
+                .with_suggestion(LintSuggestion {
+                    description: "Set a reasonable timeout (e.g., 30 seconds)".to_string(),
+                    path: "collectors.timeout_secs".to_string(),
+                    suggested_value: Some("30".to_string()),
+                }),
             );
         }
 
         // Validate log level
-        let valid_levels = ["trace", "debug", "info", "warn", "error"];
-        if !valid_levels.contains(&self.global.log_level.to_lowercase().as_str()) {
+        if !VALID_LOG_LEVELS.contains(&self.global.log_level.to_lowercase().as_str()) {
             result.add(
                 LintIssue::error(
                     "global.log_level",
                     format!(
                         "Invalid log level '{}'. Must be one of: {}",
                         self.global.log_level,
-                        valid_levels.join(", ")
+                        VALID_LOG_LEVELS.join(", ")
                     ),
                 )
                 .with_suggestion(LintSuggestion {
@@ -793,12 +800,13 @@ impl VcConfig {
         // Web port must be positive
         if self.web.port == 0 {
             result.add(
-                LintIssue::error("web.port", "Web port must be greater than 0")
-                    .with_suggestion(LintSuggestion {
+                LintIssue::error("web.port", "Web port must be greater than 0").with_suggestion(
+                    LintSuggestion {
                         description: "Set a valid port number".to_string(),
                         path: "web.port".to_string(),
                         suggested_value: Some("8080".to_string()),
-                    }),
+                    },
+                ),
             );
         }
 
@@ -1020,9 +1028,8 @@ port = 8080
     /// # Errors
     /// Returns an error if serialization fails.
     pub fn to_toml(&self) -> Result<String, ConfigError> {
-        toml::to_string_pretty(self).map_err(|e| {
-            ConfigError::ValidationError(format!("Failed to serialize config: {e}"))
-        })
+        toml::to_string_pretty(self)
+            .map_err(|e| ConfigError::ValidationError(format!("Failed to serialize config: {e}")))
     }
 }
 
@@ -1294,7 +1301,12 @@ enabled = true
         // Default config should have no errors
         assert!(!result.has_errors());
         // But may have info (no machines defined)
-        assert!(result.issues.iter().any(|i| i.severity == LintSeverity::Info));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.severity == LintSeverity::Info)
+        );
     }
 
     #[test]
@@ -1304,7 +1316,12 @@ enabled = true
         let result = config.lint();
         assert!(result.has_errors());
         assert!(result.error_count == 1);
-        assert!(result.issues.iter().any(|i| i.path == "global.poll_interval_secs"));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.path == "global.poll_interval_secs")
+        );
     }
 
     #[test]
@@ -1314,11 +1331,13 @@ enabled = true
         let result = config.lint();
         assert!(!result.has_errors());
         assert!(result.warning_count >= 1);
-        assert!(result
-            .issues
-            .iter()
-            .any(|i| i.path == "global.poll_interval_secs"
-                && i.severity == LintSeverity::Warning));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.path == "global.poll_interval_secs"
+                    && i.severity == LintSeverity::Warning)
+        );
     }
 
     #[test]
@@ -1348,10 +1367,7 @@ enabled = true
         );
         let result = config.lint();
         assert!(result.has_errors());
-        assert!(result
-            .issues
-            .iter()
-            .any(|i| i.path.contains("ssh_user")));
+        assert!(result.issues.iter().any(|i| i.path.contains("ssh_user")));
     }
 
     #[test]
@@ -1364,10 +1380,12 @@ enabled = true
         config.alerts.desktop_notifications = false;
         let result = config.lint();
         // Should warn about no delivery channels
-        assert!(result
-            .issues
-            .iter()
-            .any(|i| i.path == "alerts" && i.severity == LintSeverity::Warning));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.path == "alerts" && i.severity == LintSeverity::Warning)
+        );
     }
 
     #[test]
@@ -1377,11 +1395,11 @@ enabled = true
         config.autopilot.min_confidence = 0.3;
         let result = config.lint();
         // Should warn about low confidence
-        assert!(result
-            .issues
-            .iter()
-            .any(|i| i.path == "autopilot.min_confidence"
-                && i.severity == LintSeverity::Warning));
+        assert!(
+            result.issues.iter().any(
+                |i| i.path == "autopilot.min_confidence" && i.severity == LintSeverity::Warning
+            )
+        );
     }
 
     #[test]

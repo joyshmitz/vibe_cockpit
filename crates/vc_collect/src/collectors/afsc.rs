@@ -192,7 +192,10 @@ impl Collector for AfscCollector {
         // 1. Collect status snapshot
         let status_result = ctx
             .executor
-            .run_timeout("automated_flywheel_setup_checker status --format json", ctx.timeout)
+            .run_timeout(
+                "automated_flywheel_setup_checker status --format json",
+                ctx.timeout,
+            )
             .await;
 
         if let Ok(output) = status_result {
@@ -210,7 +213,10 @@ impl Collector for AfscCollector {
                         "uptime_seconds": status.uptime_seconds,
                         "raw_json": output,
                     });
-                    batches.push(RowBatch { table: "afsc_status_snapshot".to_string(), rows: vec![row] });
+                    batches.push(RowBatch {
+                        table: "afsc_status_snapshot".to_string(),
+                        rows: vec![row],
+                    });
                 }
                 Err(e) => {
                     warnings.push(
@@ -258,7 +264,10 @@ impl Collector for AfscCollector {
                 .collect();
 
             if !run_rows.is_empty() {
-                batches.push(RowBatch { table: "afsc_run_facts".to_string(), rows: run_rows });
+                batches.push(RowBatch {
+                    table: "afsc_run_facts".to_string(),
+                    rows: run_rows,
+                });
             }
         } else if let Err(e) = list_result {
             warnings.push(Warning::warn(format!("afsc list command failed: {}", e)));
@@ -293,7 +302,10 @@ impl Collector for AfscCollector {
                 .collect();
 
             if !event_rows.is_empty() {
-                batches.push(RowBatch { table: "afsc_event_logs".to_string(), rows: event_rows });
+                batches.push(RowBatch {
+                    table: "afsc_event_logs".to_string(),
+                    rows: event_rows,
+                });
             }
         } else if let Err(e) = validate_result {
             warnings.push(Warning::warn(format!(
@@ -331,7 +343,10 @@ impl Collector for AfscCollector {
                 .collect();
 
             if !cluster_rows.is_empty() {
-                batches.push(RowBatch { table: "afsc_error_clusters".to_string(), rows: cluster_rows });
+                batches.push(RowBatch {
+                    table: "afsc_error_clusters".to_string(),
+                    rows: cluster_rows,
+                });
             }
         } else if let Err(e) = classify_result {
             warnings.push(Warning::warn(format!(
@@ -348,7 +363,10 @@ impl Collector for AfscCollector {
             None
         };
 
-        let success = !batches.is_empty() || warnings.iter().all(|w| w.level != crate::WarningLevel::Error);
+        let success = !batches.is_empty()
+            || warnings
+                .iter()
+                .all(|w| w.level != crate::WarningLevel::Error);
 
         Ok(CollectResult {
             rows: batches,

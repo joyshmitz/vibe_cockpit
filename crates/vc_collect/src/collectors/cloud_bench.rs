@@ -330,8 +330,10 @@ impl Collector for CloudBenchCollector {
                                         table: "cloud_bench_raw".to_string(),
                                         rows: raw_rows,
                                     });
-                                    warnings
-                                        .push(Warning::info(format!("Used SQLite fallback: {}", db_path)));
+                                    warnings.push(Warning::info(format!(
+                                        "Used SQLite fallback: {}",
+                                        db_path
+                                    )));
                                     break;
                                 }
                             }
@@ -477,7 +479,8 @@ mod tests {
 
     #[test]
     fn test_parse_raw_benchmark_minimal() {
-        let json = r#"{"benchmark_type": "memory", "benchmark_name": "bandwidth", "value": 5000.0}"#;
+        let json =
+            r#"{"benchmark_type": "memory", "benchmark_name": "bandwidth", "value": 5000.0}"#;
 
         let benchmark: RawBenchmark = serde_json::from_str(json).unwrap();
         assert_eq!(benchmark.benchmark_type, "memory");

@@ -132,7 +132,11 @@ pub struct KnowledgeEntry {
 
 impl KnowledgeEntry {
     /// Create a new knowledge entry
-    pub fn new(entry_type: EntryType, title: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn new(
+        entry_type: EntryType,
+        title: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             id: None,
             entry_type,
@@ -291,9 +295,7 @@ impl KnowledgeStore {
 
         let conn = self.store.connection();
         let conn_guard = conn.lock().map_err(|e| {
-            KnowledgeError::StoreError(vc_store::StoreError::QueryError(format!(
-                "lock error: {e}"
-            )))
+            KnowledgeError::StoreError(vc_store::StoreError::QueryError(format!("lock error: {e}")))
         })?;
 
         let id: i64 = conn_guard.query_row(
@@ -323,9 +325,7 @@ impl KnowledgeStore {
         let sql = "SELECT * FROM knowledge_entries WHERE id = ?";
         let conn = self.store.connection();
         let conn_guard = conn.lock().map_err(|e| {
-            KnowledgeError::StoreError(vc_store::StoreError::QueryError(format!(
-                "lock error: {e}"
-            )))
+            KnowledgeError::StoreError(vc_store::StoreError::QueryError(format!("lock error: {e}")))
         })?;
 
         conn_guard
@@ -357,9 +357,7 @@ impl KnowledgeStore {
 
         let conn = self.store.connection();
         let conn_guard = conn.lock().map_err(|e| {
-            KnowledgeError::StoreError(vc_store::StoreError::QueryError(format!(
-                "lock error: {e}"
-            )))
+            KnowledgeError::StoreError(vc_store::StoreError::QueryError(format!("lock error: {e}")))
         })?;
 
         let id: i64 = conn_guard.query_row(
@@ -400,12 +398,17 @@ impl KnowledgeStore {
             updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         "#;
-        self.store.execute(sql, &[&entry_id.to_string(), &entry_id.to_string()])?;
+        self.store
+            .execute(sql, &[&entry_id.to_string(), &entry_id.to_string()])?;
         Ok(())
     }
 
     /// Search for entries by keyword
-    pub fn search(&self, query: &str, options: &SearchOptions) -> Result<Vec<SearchResult>, KnowledgeError> {
+    pub fn search(
+        &self,
+        query: &str,
+        options: &SearchOptions,
+    ) -> Result<Vec<SearchResult>, KnowledgeError> {
         let mut conditions = vec!["1=1".to_string()];
         let mut params: Vec<String> = vec![];
 
@@ -428,7 +431,11 @@ impl KnowledgeStore {
         }
 
         // Build query
-        let limit = if options.limit == 0 { 20 } else { options.limit };
+        let limit = if options.limit == 0 {
+            20
+        } else {
+            options.limit
+        };
         let sql = format!(
             r#"
             SELECT *,
@@ -447,8 +454,9 @@ impl KnowledgeStore {
         results
             .into_iter()
             .map(|row| {
-                let entry = serde_json::from_value::<KnowledgeEntry>(row.clone())
-                    .map_err(|e| KnowledgeError::StoreError(vc_store::StoreError::SerializationError(e)))?;
+                let entry = serde_json::from_value::<KnowledgeEntry>(row.clone()).map_err(|e| {
+                    KnowledgeError::StoreError(vc_store::StoreError::SerializationError(e))
+                })?;
                 let score = row["score"].as_f64().unwrap_or(0.0);
                 Ok(SearchResult { entry, score })
             })
@@ -456,7 +464,11 @@ impl KnowledgeStore {
     }
 
     /// Get entries by tag
-    pub fn get_by_tags(&self, tags: &[String], limit: usize) -> Result<Vec<KnowledgeEntry>, KnowledgeError> {
+    pub fn get_by_tags(
+        &self,
+        tags: &[String],
+        limit: usize,
+    ) -> Result<Vec<KnowledgeEntry>, KnowledgeError> {
         if tags.is_empty() {
             return Ok(vec![]);
         }
@@ -484,24 +496,24 @@ impl KnowledgeStore {
         results
             .into_iter()
             .map(|row| {
-                serde_json::from_value::<KnowledgeEntry>(row)
-                    .map_err(|e| KnowledgeError::StoreError(vc_store::StoreError::SerializationError(e)))
+                serde_json::from_value::<KnowledgeEntry>(row).map_err(|e| {
+                    KnowledgeError::StoreError(vc_store::StoreError::SerializationError(e))
+                })
             })
             .collect()
     }
 
     /// Get recent entries
     pub fn recent(&self, limit: usize) -> Result<Vec<KnowledgeEntry>, KnowledgeError> {
-        let sql = format!(
-            "SELECT * FROM knowledge_entries ORDER BY created_at DESC LIMIT {limit}"
-        );
+        let sql = format!("SELECT * FROM knowledge_entries ORDER BY created_at DESC LIMIT {limit}");
         let results = self.store.query_json(&sql)?;
 
         results
             .into_iter()
             .map(|row| {
-                serde_json::from_value::<KnowledgeEntry>(row)
-                    .map_err(|e| KnowledgeError::StoreError(vc_store::StoreError::SerializationError(e)))
+                serde_json::from_value::<KnowledgeEntry>(row).map_err(|e| {
+                    KnowledgeError::StoreError(vc_store::StoreError::SerializationError(e))
+                })
             })
             .collect()
     }
@@ -516,23 +528,32 @@ impl KnowledgeStore {
         results
             .into_iter()
             .map(|row| {
-                serde_json::from_value::<KnowledgeEntry>(row)
-                    .map_err(|e| KnowledgeError::StoreError(vc_store::StoreError::SerializationError(e)))
+                serde_json::from_value::<KnowledgeEntry>(row).map_err(|e| {
+                    KnowledgeError::StoreError(vc_store::StoreError::SerializationError(e))
+                })
             })
             .collect()
     }
 
     /// Delete an entry
     pub fn delete(&self, id: i64) -> Result<(), KnowledgeError> {
-        self.store.execute("DELETE FROM knowledge_feedback WHERE entry_id = ?", &[&id.to_string()])?;
-        self.store.execute("DELETE FROM knowledge_entries WHERE id = ?", &[&id.to_string()])?;
+        self.store.execute(
+            "DELETE FROM knowledge_feedback WHERE entry_id = ?",
+            &[&id.to_string()],
+        )?;
+        self.store.execute(
+            "DELETE FROM knowledge_entries WHERE id = ?",
+            &[&id.to_string()],
+        )?;
         Ok(())
     }
 
     /// Helper to convert a row to KnowledgeEntry
     fn row_to_entry(&self, row: &duckdb::Row<'_>) -> Result<KnowledgeEntry, duckdb::Error> {
         let entry_type_str: String = row.get("entry_type")?;
-        let entry_type = entry_type_str.parse::<EntryType>().unwrap_or(EntryType::Solution);
+        let entry_type = entry_type_str
+            .parse::<EntryType>()
+            .unwrap_or(EntryType::Solution);
 
         let tags_str: Option<String> = row.get("tags")?;
         let tags: Vec<String> = tags_str
@@ -657,16 +678,28 @@ mod tests {
 
     #[test]
     fn test_entry_type_from_str() {
-        assert_eq!("solution".parse::<EntryType>().unwrap(), EntryType::Solution);
+        assert_eq!(
+            "solution".parse::<EntryType>().unwrap(),
+            EntryType::Solution
+        );
         assert_eq!("pattern".parse::<EntryType>().unwrap(), EntryType::Pattern);
         assert_eq!("prompt".parse::<EntryType>().unwrap(), EntryType::Prompt);
-        assert_eq!("debug_log".parse::<EntryType>().unwrap(), EntryType::DebugLog);
-        assert_eq!("debuglog".parse::<EntryType>().unwrap(), EntryType::DebugLog);
+        assert_eq!(
+            "debug_log".parse::<EntryType>().unwrap(),
+            EntryType::DebugLog
+        );
+        assert_eq!(
+            "debuglog".parse::<EntryType>().unwrap(),
+            EntryType::DebugLog
+        );
     }
 
     #[test]
     fn test_entry_type_case_insensitive() {
-        assert_eq!("SOLUTION".parse::<EntryType>().unwrap(), EntryType::Solution);
+        assert_eq!(
+            "SOLUTION".parse::<EntryType>().unwrap(),
+            EntryType::Solution
+        );
         assert_eq!("Pattern".parse::<EntryType>().unwrap(), EntryType::Pattern);
     }
 
@@ -701,9 +734,18 @@ mod tests {
 
     #[test]
     fn test_feedback_type_from_str() {
-        assert_eq!("helpful".parse::<FeedbackType>().unwrap(), FeedbackType::Helpful);
-        assert_eq!("not_helpful".parse::<FeedbackType>().unwrap(), FeedbackType::NotHelpful);
-        assert_eq!("outdated".parse::<FeedbackType>().unwrap(), FeedbackType::Outdated);
+        assert_eq!(
+            "helpful".parse::<FeedbackType>().unwrap(),
+            FeedbackType::Helpful
+        );
+        assert_eq!(
+            "not_helpful".parse::<FeedbackType>().unwrap(),
+            FeedbackType::NotHelpful
+        );
+        assert_eq!(
+            "outdated".parse::<FeedbackType>().unwrap(),
+            FeedbackType::Outdated
+        );
     }
 
     // KnowledgeEntry tests

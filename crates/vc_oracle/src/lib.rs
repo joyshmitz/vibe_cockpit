@@ -18,8 +18,8 @@ pub mod experiment;
 pub mod rate_limit;
 
 pub use dna::{
-    AgentDna, Anomaly, DnaComparison, DnaComputer, DnaComputeConfig, DnaError, DnaHistory,
-    DnaStats, Difference, TimeRange, cosine_similarity, mean_stddev,
+    AgentDna, Anomaly, Difference, DnaComparison, DnaComputeConfig, DnaComputer, DnaError,
+    DnaHistory, DnaStats, TimeRange, cosine_similarity, mean_stddev,
 };
 pub use evolution::{
     EvolutionConfig, EvolutionError, EvolutionManager, EvolutionResult, FitnessMetrics,

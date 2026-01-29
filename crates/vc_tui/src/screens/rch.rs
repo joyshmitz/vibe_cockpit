@@ -3,11 +3,11 @@
 //! Displays worker status, recent builds, cache metrics, and slowest crates.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
-    Frame,
 };
 
 use crate::theme::Theme;

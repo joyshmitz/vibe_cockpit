@@ -3,11 +3,11 @@
 //! Displays active alerts, history, and rule management.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
-    Frame,
 };
 
 use crate::theme::Theme;

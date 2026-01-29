@@ -929,10 +929,7 @@ impl Cli {
                                     );
 
                                     if let Some(ref suggestion) = issue.suggestion {
-                                        println!(
-                                            "  → Fix: {}",
-                                            suggestion.description
-                                        );
+                                        println!("  → Fix: {}", suggestion.description);
                                         if let Some(ref val) = suggestion.suggested_value {
                                             println!("    {} = {}", suggestion.path, val);
                                         }
@@ -974,10 +971,7 @@ impl Cli {
 
                         // Write to file
                         std::fs::write(&output_path, &content).map_err(|e| {
-                            CliError::CommandFailed(format!(
-                                "Failed to write config: {}",
-                                e
-                            ))
+                            CliError::CommandFailed(format!("Failed to write config: {}", e))
                         })?;
 
                         println!("✓ Generated configuration: {}", output_path.display());

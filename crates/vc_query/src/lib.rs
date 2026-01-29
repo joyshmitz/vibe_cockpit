@@ -16,9 +16,9 @@ pub use guardrails::{GuardrailConfig, QueryTemplate, QueryValidator, ValidationE
 
 pub mod cost;
 pub use cost::{
-    AnomalySeverity, AnomalyType, ConfidenceFactors, CostAnomaly, CostAttribution,
-    CostDriver, CostQueryBuilder, CostSummary, CostTrend, MachineCost, ProviderCost,
-    ProviderPricing, RepoCost, estimate_cost,
+    AnomalySeverity, AnomalyType, ConfidenceFactors, CostAnomaly, CostAttribution, CostDriver,
+    CostQueryBuilder, CostSummary, CostTrend, MachineCost, ProviderCost, ProviderPricing, RepoCost,
+    estimate_cost,
 };
 
 /// Query errors

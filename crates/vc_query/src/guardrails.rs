@@ -307,6 +307,8 @@ impl QueryValidator {
     /// Check that a query is read-only (SELECT only)
     pub fn validate_readonly(&self, sql: &str) -> Result<(), ValidationError> {
         let normalized = sql.trim().to_uppercase();
+        // Pad with spaces to simplify boundary checks (catches keywords at start/end)
+        let padded = format!(" {} ", normalized);
 
         // Check for forbidden statement types
         let forbidden = [
@@ -333,22 +335,28 @@ impl QueryValidator {
         ];
 
         for keyword in forbidden {
-            // Check if query starts with forbidden keyword
-            if normalized.starts_with(keyword) {
+            // Check for forbidden keyword surrounded by word boundaries (spaces)
+            // The padded string ensures keywords at start/end are also caught
+            if padded.contains(&format!(" {} ", keyword)) {
+                // Allow SELECT after WITH (for CTEs like "WITH x AS (SELECT ...)")
+                if keyword == "SELECT" {
+                    continue;
+                }
+                // Avoid false positives for " AS CREATE" type patterns in column aliases
+                if padded.contains(&format!(" AS {} ", keyword)) {
+                    continue;
+                }
                 return Err(ValidationError::ForbiddenStatement {
                     statement_type: keyword.to_string(),
                 });
             }
-            // Check for forbidden keyword after WITH clause (CTE)
-            if normalized.contains(&format!(" {} ", keyword))
-                || normalized.contains(&format!("{} ", keyword))
+            // Also check for keyword after semicolon (multi-statement attempts)
+            if padded.contains(&format!("; {} ", keyword))
+                || padded.contains(&format!(";{} ", keyword))
             {
-                // Allow SELECT after WITH
-                if keyword != "SELECT" && !normalized.contains(&format!(" AS {}", keyword)) {
-                    return Err(ValidationError::ForbiddenStatement {
-                        statement_type: keyword.to_string(),
-                    });
-                }
+                return Err(ValidationError::ForbiddenStatement {
+                    statement_type: keyword.to_string(),
+                });
             }
         }
 

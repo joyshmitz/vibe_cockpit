@@ -876,11 +876,7 @@ impl ExperimentAnalyzer {
                 };
 
                 let direction = if is_significant {
-                    if is_better {
-                        "better"
-                    } else {
-                        "worse"
-                    }
+                    if is_better { "better" } else { "worse" }
                 } else {
                     "neutral"
                 }

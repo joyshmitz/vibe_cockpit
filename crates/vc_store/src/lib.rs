@@ -711,7 +711,9 @@ mod tests {
     #[test]
     fn test_insert_json_string_error() {
         let store = VcStore::open_memory().unwrap();
-        store.execute_simple("CREATE TABLE test_str (id INTEGER)").unwrap();
+        store
+            .execute_simple("CREATE TABLE test_str (id INTEGER)")
+            .unwrap();
 
         let result = store.insert_json("test_str", &serde_json::json!("just a string"));
         assert!(result.is_err());

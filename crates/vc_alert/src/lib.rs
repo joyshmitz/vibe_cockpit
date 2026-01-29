@@ -158,7 +158,9 @@ impl AlertEngine {
                 severity: Severity::Critical,
                 enabled: true,
                 condition: AlertCondition::Threshold {
-                    query: "SELECT 100.0 * (1 - (SELECT AVG(mem_total_bytes - mem_used_bytes) / AVG(mem_total_bytes) FROM sys_samples WHERE collected_at > datetime('now', '-5 minutes')))".to_string(),
+                    // Extract max disk usage pct from the first mount point in disk_usage_json
+                    // JSON format: [{mount, total, used, avail, pct}, ...]
+                    query: "SELECT COALESCE(CAST(json_extract(disk_usage_json, '$[0].pct') AS REAL), 0.0) FROM sys_fallback_samples WHERE collected_at > datetime('now', '-5 minutes') AND disk_usage_json IS NOT NULL ORDER BY collected_at DESC LIMIT 1".to_string(),
                     operator: ThresholdOp::Gte,
                     value: 90.0,
                 },

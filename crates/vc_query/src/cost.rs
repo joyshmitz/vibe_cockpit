@@ -181,7 +181,11 @@ impl<'a> CostQueryBuilder<'a> {
     }
 
     /// Get pricing for a specific provider/model
-    pub fn get_pricing(&self, provider: &str, model: &str) -> Result<Option<ProviderPricing>, QueryError> {
+    pub fn get_pricing(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<Option<ProviderPricing>, QueryError> {
         let sql = format!(
             "SELECT provider, model, price_per_1k_input_tokens, price_per_1k_output_tokens \
              FROM provider_pricing \
@@ -197,9 +201,7 @@ impl<'a> CostQueryBuilder<'a> {
             Ok(Some(ProviderPricing {
                 provider: row["provider"].as_str().unwrap_or_default().to_string(),
                 model: row["model"].as_str().unwrap_or_default().to_string(),
-                price_per_1k_input_tokens: row["price_per_1k_input_tokens"]
-                    .as_f64()
-                    .unwrap_or(0.0),
+                price_per_1k_input_tokens: row["price_per_1k_input_tokens"].as_f64().unwrap_or(0.0),
                 price_per_1k_output_tokens: row["price_per_1k_output_tokens"]
                     .as_f64()
                     .unwrap_or(0.0),
@@ -223,9 +225,7 @@ impl<'a> CostQueryBuilder<'a> {
             .map(|row| ProviderPricing {
                 provider: row["provider"].as_str().unwrap_or_default().to_string(),
                 model: row["model"].as_str().unwrap_or_default().to_string(),
-                price_per_1k_input_tokens: row["price_per_1k_input_tokens"]
-                    .as_f64()
-                    .unwrap_or(0.0),
+                price_per_1k_input_tokens: row["price_per_1k_input_tokens"].as_f64().unwrap_or(0.0),
                 price_per_1k_output_tokens: row["price_per_1k_output_tokens"]
                     .as_f64()
                     .unwrap_or(0.0),
@@ -271,7 +271,8 @@ impl<'a> CostQueryBuilder<'a> {
         let by_machine = self.cost_by_machine(since, until)?;
 
         // Calculate top cost drivers
-        let top_cost_drivers = self.calculate_top_drivers(&by_provider, &by_repo, &by_machine, total_cost);
+        let top_cost_drivers =
+            self.calculate_top_drivers(&by_provider, &by_repo, &by_machine, total_cost);
 
         Ok(CostSummary {
             period_start: since,
@@ -306,7 +307,10 @@ impl<'a> CostQueryBuilder<'a> {
         );
 
         let rows = self.store.query_json(&sql)?;
-        let total: f64 = rows.iter().map(|r| r["cost_usd"].as_f64().unwrap_or(0.0)).sum();
+        let total: f64 = rows
+            .iter()
+            .map(|r| r["cost_usd"].as_f64().unwrap_or(0.0))
+            .sum();
 
         Ok(rows
             .into_iter()
@@ -316,7 +320,11 @@ impl<'a> CostQueryBuilder<'a> {
                     provider: row["provider"].as_str().unwrap_or("unknown").to_string(),
                     cost_usd: cost,
                     tokens: row["tokens"].as_i64().unwrap_or(0),
-                    percentage: if total > 0.0 { (cost / total) * 100.0 } else { 0.0 },
+                    percentage: if total > 0.0 {
+                        (cost / total) * 100.0
+                    } else {
+                        0.0
+                    },
                 }
             })
             .collect())
@@ -452,17 +460,18 @@ impl<'a> CostQueryBuilder<'a> {
         }
 
         // Sort by cost descending
-        drivers.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+        drivers.sort_by(|a, b| {
+            b.cost_usd
+                .partial_cmp(&a.cost_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         drivers.truncate(5);
 
         drivers
     }
 
     /// Detect cost anomalies
-    pub fn detect_anomalies(
-        &self,
-        threshold_percent: f64,
-    ) -> Result<Vec<CostAnomaly>, QueryError> {
+    pub fn detect_anomalies(&self, threshold_percent: f64) -> Result<Vec<CostAnomaly>, QueryError> {
         // Compare recent costs to historical baseline
         let sql = "SELECT \
                 provider, \
@@ -535,8 +544,7 @@ impl<'a> CostQueryBuilder<'a> {
     pub fn insert_attribution(&self, attribution: &CostAttribution) -> Result<(), QueryError> {
         let confidence_json = serde_json::to_string(&attribution.confidence_factors)
             .unwrap_or_else(|_| "{}".to_string());
-        let raw_json =
-            serde_json::to_string(&attribution).unwrap_or_else(|_| "{}".to_string());
+        let raw_json = serde_json::to_string(&attribution).unwrap_or_else(|_| "{}".to_string());
 
         let sql = format!(
             "INSERT INTO cost_attribution_snapshot \
@@ -582,12 +590,7 @@ impl<'a> CostQueryBuilder<'a> {
 }
 
 /// Estimate cost from token usage using default pricing
-pub fn estimate_cost(
-    provider: &str,
-    model: &str,
-    input_tokens: i64,
-    output_tokens: i64,
-) -> f64 {
+pub fn estimate_cost(provider: &str, model: &str, input_tokens: i64, output_tokens: i64) -> f64 {
     // Default pricing fallback (if not in database)
     let (input_price, output_price) = match (provider, model) {
         ("anthropic", m) if m.contains("opus") => (0.015, 0.075),
