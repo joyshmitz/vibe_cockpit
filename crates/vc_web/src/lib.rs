@@ -134,6 +134,11 @@ pub struct HealthResponse {
     pub uptime_secs: u64,
 }
 
+/// Maximum allowed limit for pagination to prevent DoS
+const MAX_PAGINATION_LIMIT: usize = 1000;
+/// Maximum allowed offset for pagination
+const MAX_PAGINATION_OFFSET: usize = 1_000_000;
+
 /// Query parameters for pagination
 #[derive(Debug, Deserialize)]
 pub struct PaginationParams {
@@ -141,6 +146,18 @@ pub struct PaginationParams {
     pub limit: usize,
     #[serde(default)]
     pub offset: usize,
+}
+
+impl PaginationParams {
+    /// Get bounded limit (clamped to MAX_PAGINATION_LIMIT)
+    pub fn bounded_limit(&self) -> usize {
+        self.limit.min(MAX_PAGINATION_LIMIT).max(1)
+    }
+
+    /// Get bounded offset (clamped to MAX_PAGINATION_OFFSET)
+    pub fn bounded_offset(&self) -> usize {
+        self.offset.min(MAX_PAGINATION_OFFSET)
+    }
 }
 
 fn default_limit() -> usize {
@@ -286,19 +303,17 @@ async fn machines_handler(
     let builder = QueryBuilder::new(&state.store);
     let machines = builder.machines()?;
 
-    // Apply pagination
+    // Apply pagination with bounds checking
     let total = machines.len();
-    let paginated: Vec<_> = machines
-        .into_iter()
-        .skip(params.offset)
-        .take(params.limit)
-        .collect();
+    let limit = params.bounded_limit();
+    let offset = params.bounded_offset();
+    let paginated: Vec<_> = machines.into_iter().skip(offset).take(limit).collect();
 
     Ok(Json(serde_json::json!({
         "machines": paginated,
         "total": total,
-        "limit": params.limit,
-        "offset": params.offset
+        "limit": limit,
+        "offset": offset
     })))
 }
 
@@ -336,19 +351,21 @@ async fn machine_collectors_handler(
     Path(id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, WebError> {
+    let limit = params.bounded_limit();
+    let offset = params.bounded_offset();
     let sql = format!(
         "SELECT * FROM collector_status WHERE machine_id = '{}' ORDER BY collector_name LIMIT {} OFFSET {}",
         id.replace('\'', "''"),
-        params.limit,
-        params.offset
+        limit,
+        offset
     );
     let collectors = state.store.query_json(&sql)?;
 
     Ok(Json(serde_json::json!({
         "machine_id": id,
         "collectors": collectors,
-        "limit": params.limit,
-        "offset": params.offset
+        "limit": limit,
+        "offset": offset
     })))
 }
 
@@ -361,12 +378,13 @@ async fn alerts_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, WebError> {
+    let limit = params.bounded_limit();
     let builder = QueryBuilder::new(&state.store);
-    let alerts = builder.recent_alerts(params.limit)?;
+    let alerts = builder.recent_alerts(limit)?;
 
     Ok(Json(serde_json::json!({
         "alerts": alerts,
-        "limit": params.limit
+        "limit": limit
     })))
 }
 
@@ -375,16 +393,18 @@ async fn alert_rules_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, WebError> {
+    let limit = params.bounded_limit();
+    let offset = params.bounded_offset();
     let sql = format!(
         "SELECT * FROM alert_rules ORDER BY rule_id LIMIT {} OFFSET {}",
-        params.limit, params.offset
+        limit, offset
     );
     let rules = state.store.query_json(&sql)?;
 
     Ok(Json(serde_json::json!({
         "rules": rules,
-        "limit": params.limit,
-        "offset": params.offset
+        "limit": limit,
+        "offset": offset
     })))
 }
 
@@ -413,16 +433,18 @@ async fn sessions_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, WebError> {
+    let limit = params.bounded_limit();
+    let offset = params.bounded_offset();
     let sql = format!(
         "SELECT * FROM agent_sessions ORDER BY collected_at DESC LIMIT {} OFFSET {}",
-        params.limit, params.offset
+        limit, offset
     );
     let sessions = state.store.query_json(&sql)?;
 
     Ok(Json(serde_json::json!({
         "sessions": sessions,
-        "limit": params.limit,
-        "offset": params.offset
+        "limit": limit,
+        "offset": offset
     })))
 }
 
@@ -447,16 +469,18 @@ async fn guardian_runs_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, WebError> {
+    let limit = params.bounded_limit();
+    let offset = params.bounded_offset();
     let sql = format!(
         "SELECT * FROM guardian_runs ORDER BY started_at DESC LIMIT {} OFFSET {}",
-        params.limit, params.offset
+        limit, offset
     );
     let runs = state.store.query_json(&sql)?;
 
     Ok(Json(serde_json::json!({
         "runs": runs,
-        "limit": params.limit,
-        "offset": params.offset
+        "limit": limit,
+        "offset": offset
     })))
 }
 
@@ -465,16 +489,18 @@ async fn guardian_pending_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, WebError> {
+    let limit = params.bounded_limit();
+    let offset = params.bounded_offset();
     let sql = format!(
         "SELECT * FROM guardian_runs WHERE status = 'pending_approval' ORDER BY started_at DESC LIMIT {} OFFSET {}",
-        params.limit, params.offset
+        limit, offset
     );
     let pending = state.store.query_json(&sql)?;
 
     Ok(Json(serde_json::json!({
         "pending": pending,
-        "limit": params.limit,
-        "offset": params.offset
+        "limit": limit,
+        "offset": offset
     })))
 }
 

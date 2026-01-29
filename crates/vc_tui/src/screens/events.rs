@@ -484,6 +484,8 @@ fn render_dcg(f: &mut Frame, area: Rect, data: &EventsData, theme: &Theme) {
     }
 
     let mut items: Vec<ListItem> = Vec::new();
+    // Track a flattened event index across all machine groups for correct selection
+    let mut flat_event_index: usize = 0;
     for (machine, events) in by_machine {
         let critical = events
             .iter()
@@ -506,8 +508,8 @@ fn render_dcg(f: &mut Frame, area: Rect, data: &EventsData, theme: &Theme) {
         ])));
 
         // Show top events
-        for (i, event) in events.iter().take(3).enumerate() {
-            let is_event_selected = is_selected && data.selected_index == i;
+        for event in events.iter().take(3) {
+            let is_event_selected = is_selected && data.selected_index == flat_event_index;
             let style = if is_event_selected {
                 Style::default().fg(theme.highlight)
             } else {
@@ -529,6 +531,7 @@ fn render_dcg(f: &mut Frame, area: Rect, data: &EventsData, theme: &Theme) {
                     Style::default().fg(theme.muted),
                 ),
             ])));
+            flat_event_index += 1;
         }
     }
 

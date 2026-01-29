@@ -224,11 +224,18 @@ fn render_sessions_table(f: &mut Frame, area: Rect, data: &SessionsData, theme: 
             .collect()
     };
 
+    // Clamp selection to filtered list bounds to prevent index mismatch
+    let clamped_selected = if filtered.is_empty() {
+        0
+    } else {
+        data.selected.min(filtered.len().saturating_sub(1))
+    };
+
     let rows: Vec<Row> = filtered
         .iter()
         .enumerate()
         .map(|(i, session)| {
-            let is_selected = i == data.selected;
+            let is_selected = i == clamped_selected;
             let row_style = if is_selected {
                 Style::default().bg(theme.bg_secondary)
             } else {

@@ -186,12 +186,19 @@ fn render_accounts_table(f: &mut Frame, area: Rect, data: &AccountsData, theme: 
             .collect()
     };
 
+    // Clamp selection to filtered list bounds to prevent index mismatch
+    let clamped_selected = if filtered.is_empty() {
+        0
+    } else {
+        data.selected.min(filtered.len().saturating_sub(1))
+    };
+
     // Create table rows
     let rows: Vec<Row> = filtered
         .iter()
         .enumerate()
         .map(|(i, account)| {
-            let is_selected = i == data.selected;
+            let is_selected = i == clamped_selected;
             let row_style = if is_selected {
                 Style::default().bg(theme.bg_secondary)
             } else {
