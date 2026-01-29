@@ -1666,4 +1666,81 @@ mod tests {
         let history = store.list_vacuum_history(10).unwrap();
         assert!(history.is_empty());
     }
+
+    #[test]
+    fn test_vacuum_with_data() {
+        let store = VcStore::open_memory().unwrap();
+
+        // Create a test table with a timestamp column
+        store
+            .execute_simple(
+                "CREATE TABLE test_vacuum_data (id INTEGER, collected_at TIMESTAMP, data TEXT)",
+            )
+            .unwrap();
+
+        // Insert some data - some old, some recent
+        store
+            .execute_simple(
+                "INSERT INTO test_vacuum_data VALUES
+                 (1, '2020-01-01 00:00:00', 'old'),
+                 (2, '2020-06-01 00:00:00', 'old'),
+                 (3, current_timestamp, 'new')",
+            )
+            .unwrap();
+
+        // Set a retention policy for 30 days
+        store
+            .set_retention_policy("test_vacuum_data", 30, None, true)
+            .unwrap();
+
+        // Run dry-run vacuum
+        let results = store.run_vacuum(true, Some("test_vacuum_data")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].dry_run);
+        assert_eq!(results[0].rows_deleted, 0); // dry run doesn't delete
+        assert_eq!(results[0].rows_would_delete, 2); // 2 old rows would be deleted
+        assert!(results[0].error.is_none());
+
+        // Verify data still exists (dry run)
+        let count: i64 = store
+            .query_scalar("SELECT COUNT(*) FROM test_vacuum_data")
+            .unwrap();
+        assert_eq!(count, 3);
+
+        // Now run actual vacuum
+        let results = store.run_vacuum(false, Some("test_vacuum_data")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].dry_run);
+        assert_eq!(results[0].rows_deleted, 2);
+        assert!(results[0].error.is_none());
+
+        // Verify only new data remains
+        let count: i64 = store
+            .query_scalar("SELECT COUNT(*) FROM test_vacuum_data")
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Verify history was logged
+        let history = store.list_vacuum_history(10).unwrap();
+        assert_eq!(history.len(), 2); // dry run + actual run
+    }
+
+    #[test]
+    fn test_vacuum_disabled_policy() {
+        let store = VcStore::open_memory().unwrap();
+
+        // Create a test table
+        store
+            .execute_simple("CREATE TABLE test_disabled (id INTEGER, ts TIMESTAMP)")
+            .unwrap();
+
+        // Set a disabled retention policy
+        store
+            .set_retention_policy("test_disabled", 7, None, false)
+            .unwrap();
+
+        // Run vacuum - should skip disabled policy
+        let results = store.run_vacuum(true, None).unwrap();
+        assert!(results.is_empty());
+    }
 }
