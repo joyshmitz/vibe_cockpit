@@ -361,13 +361,12 @@ impl VcStore {
         let details_json = serde_json::to_string(&event.details)?;
 
         // Get next ID (DuckDB doesn't auto-increment INTEGER PRIMARY KEY like SQLite)
-        let next_id: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(id), 0) + 1 FROM audit_events",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(1);
+        // COALESCE handles empty table case (returns 0 + 1 = 1)
+        let next_id: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM audit_events",
+            [],
+            |row| row.get(0),
+        )?;
 
         conn.execute(
             r#"
