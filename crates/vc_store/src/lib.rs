@@ -180,6 +180,102 @@ pub struct VacuumResult {
     pub error: Option<String>,
 }
 
+/// Collector health record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectorHealth {
+    pub machine_id: String,
+    pub collector: String,
+    pub collected_at: String,
+    pub success: bool,
+    pub duration_ms: Option<i64>,
+    pub rows_inserted: i64,
+    pub bytes_parsed: i64,
+    pub error_class: Option<String>,
+    pub freshness_seconds: Option<i64>,
+    pub payload_hash: Option<String>,
+    pub collector_version: Option<String>,
+    pub schema_version: Option<String>,
+    pub cursor_json: Option<String>,
+}
+
+/// Machine baseline profile
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineBaseline {
+    pub machine_id: String,
+    pub baseline_window: String,
+    pub computed_at: String,
+    pub metrics_json: serde_json::Value,
+}
+
+/// Drift severity levels
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DriftSeverity {
+    Info,
+    Warning,
+    Critical,
+}
+
+impl DriftSeverity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DriftSeverity::Info => "info",
+            DriftSeverity::Warning => "warning",
+            DriftSeverity::Critical => "critical",
+        }
+    }
+
+    pub fn from_z_score(z: f64) -> Self {
+        let abs_z = z.abs();
+        if abs_z >= 4.0 {
+            DriftSeverity::Critical
+        } else if abs_z >= 3.0 {
+            DriftSeverity::Warning
+        } else {
+            DriftSeverity::Info
+        }
+    }
+}
+
+impl std::str::FromStr for DriftSeverity {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().as_str() {
+            "info" => Ok(DriftSeverity::Info),
+            "warning" => Ok(DriftSeverity::Warning),
+            "critical" => Ok(DriftSeverity::Critical),
+            other => Err(format!("unknown drift severity: {other}")),
+        }
+    }
+}
+
+/// Drift event detected when a metric exceeds baseline thresholds
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriftEvent {
+    pub machine_id: String,
+    pub detected_at: String,
+    pub metric: String,
+    pub current_value: f64,
+    pub baseline_mean: f64,
+    pub baseline_std: f64,
+    pub z_score: f64,
+    pub severity: DriftSeverity,
+    pub evidence_json: Option<serde_json::Value>,
+}
+
+/// Freshness summary for a machine/collector pair
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FreshnessSummary {
+    pub machine_id: String,
+    pub collector: String,
+    pub last_success_at: Option<String>,
+    pub freshness_seconds: i64,
+    pub success_rate_24h: f64,
+    pub total_runs_24h: i64,
+    pub stale: bool,
+}
+
 /// Main storage handle
 pub struct VcStore {
     conn: Arc<Mutex<Connection>>,
@@ -745,6 +841,332 @@ impl VcStore {
             limit
         );
         self.query_json(&sql)
+    }
+
+    // =========================================================================
+    // Collector Health Methods
+    // =========================================================================
+
+    /// Record a collector health entry
+    pub fn insert_collector_health(&self, health: &CollectorHealth) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO collector_health \
+             (machine_id, collector, collected_at, success, duration_ms, rows_inserted, \
+              bytes_parsed, error_class, freshness_seconds, payload_hash, \
+              collector_version, schema_version, cursor_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            duckdb::params![
+                health.machine_id,
+                health.collector,
+                health.collected_at,
+                health.success,
+                health.duration_ms,
+                health.rows_inserted,
+                health.bytes_parsed,
+                health.error_class,
+                health.freshness_seconds,
+                health.payload_hash,
+                health.collector_version,
+                health.schema_version,
+                health.cursor_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get freshness summary for all collectors on a machine (or all machines)
+    pub fn get_freshness_summaries(
+        &self,
+        machine_id: Option<&str>,
+        stale_threshold_secs: i64,
+    ) -> Result<Vec<FreshnessSummary>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+
+        let machine_filter = match machine_id {
+            Some(id) => format!("WHERE machine_id = '{}'", escape_sql_literal(id)),
+            None => String::new(),
+        };
+
+        // For each machine/collector pair, get:
+        // - last successful collection timestamp
+        // - freshness in seconds (now - last success)
+        // - success rate over last 24h
+        // - total runs over last 24h
+        // Cast current_timestamp to TIMESTAMP to match the collected_at column type
+        // (DuckDB's current_timestamp returns TIMESTAMP WITH TIME ZONE)
+        let sql = format!(
+            "SELECT \
+                machine_id, \
+                collector, \
+                CAST(MAX(CASE WHEN success THEN collected_at END) AS TEXT) AS last_success_at, \
+                COALESCE(CAST(EXTRACT(EPOCH FROM (CAST(current_timestamp AS TIMESTAMP) - \
+                    MAX(CASE WHEN success THEN collected_at END))) AS BIGINT), -1) AS freshness_seconds, \
+                COALESCE(AVG(CASE WHEN collected_at > CAST(current_timestamp AS TIMESTAMP) - INTERVAL '24 hours' \
+                    THEN CASE WHEN success THEN 1.0 ELSE 0.0 END END), 0.0) AS success_rate_24h, \
+                COALESCE(COUNT(CASE WHEN collected_at > CAST(current_timestamp AS TIMESTAMP) - INTERVAL '24 hours' \
+                    THEN 1 END), 0) AS total_runs_24h \
+             FROM collector_health \
+             {machine_filter} \
+             GROUP BY machine_id, collector \
+             ORDER BY machine_id, collector"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            let freshness_secs: i64 = row.get(3)?;
+            Ok(FreshnessSummary {
+                machine_id: row.get(0)?,
+                collector: row.get(1)?,
+                last_success_at: row.get(2)?,
+                freshness_seconds: freshness_secs,
+                success_rate_24h: row.get(4)?,
+                total_runs_24h: row.get(5)?,
+                stale: freshness_secs < 0 || freshness_secs > stale_threshold_secs,
+            })
+        })?;
+
+        let mut summaries = Vec::new();
+        for row in rows {
+            summaries.push(row?);
+        }
+        Ok(summaries)
+    }
+
+    /// Get recent collector health entries
+    pub fn list_collector_health(
+        &self,
+        machine_id: Option<&str>,
+        collector: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>, StoreError> {
+        let mut clauses: Vec<String> = Vec::new();
+
+        if let Some(id) = machine_id {
+            clauses.push(format!("machine_id = '{}'", escape_sql_literal(id)));
+        }
+        if let Some(c) = collector {
+            clauses.push(format!("collector = '{}'", escape_sql_literal(c)));
+        }
+
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+
+        let limit = limit.min(1000);
+        let sql = format!(
+            "SELECT machine_id, collector, collected_at, success, duration_ms, \
+             rows_inserted, bytes_parsed, error_class, freshness_seconds, payload_hash \
+             FROM collector_health {where_sql} \
+             ORDER BY collected_at DESC LIMIT {limit}"
+        );
+
+        self.query_json(&sql)
+    }
+
+    // =========================================================================
+    // Machine Baseline Methods
+    // =========================================================================
+
+    /// Upsert a machine baseline
+    pub fn set_machine_baseline(
+        &self,
+        machine_id: &str,
+        baseline_window: &str,
+        metrics_json: &serde_json::Value,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let metrics_str = serde_json::to_string(metrics_json)?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO machine_baselines \
+             (machine_id, baseline_window, computed_at, metrics_json) \
+             VALUES (?, ?, current_timestamp, ?)",
+            duckdb::params![machine_id, baseline_window, metrics_str],
+        )?;
+        Ok(())
+    }
+
+    /// Get a machine baseline
+    pub fn get_machine_baseline(
+        &self,
+        machine_id: &str,
+        baseline_window: &str,
+    ) -> Result<Option<MachineBaseline>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT machine_id, baseline_window, CAST(computed_at AS TEXT), metrics_json \
+             FROM machine_baselines WHERE machine_id = ? AND baseline_window = ?",
+            duckdb::params![machine_id, baseline_window],
+            |row| {
+                let metrics_str: String = row.get(3)?;
+                Ok(MachineBaseline {
+                    machine_id: row.get(0)?,
+                    baseline_window: row.get(1)?,
+                    computed_at: row.get(2)?,
+                    metrics_json: serde_json::from_str(&metrics_str).unwrap_or_default(),
+                })
+            },
+        );
+
+        match result {
+            Ok(baseline) => Ok(Some(baseline)),
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// List all baselines for a machine
+    pub fn list_machine_baselines(
+        &self,
+        machine_id: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, StoreError> {
+        let where_clause = match machine_id {
+            Some(id) => format!("WHERE machine_id = '{}'", escape_sql_literal(id)),
+            None => String::new(),
+        };
+        let sql = format!(
+            "SELECT machine_id, baseline_window, computed_at, metrics_json \
+             FROM machine_baselines {where_clause} \
+             ORDER BY machine_id, baseline_window"
+        );
+        self.query_json(&sql)
+    }
+
+    // =========================================================================
+    // Drift Detection Methods
+    // =========================================================================
+
+    /// Record a drift event
+    pub fn insert_drift_event(&self, event: &DriftEvent) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+
+        let next_id: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM drift_events",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let evidence_str = event
+            .evidence_json
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
+
+        conn.execute(
+            "INSERT INTO drift_events \
+             (id, machine_id, detected_at, metric, current_value, baseline_mean, \
+              baseline_std, z_score, severity, evidence_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            duckdb::params![
+                next_id,
+                event.machine_id,
+                event.detected_at,
+                event.metric,
+                event.current_value,
+                event.baseline_mean,
+                event.baseline_std,
+                event.z_score,
+                event.severity.as_str(),
+                evidence_str,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// List recent drift events
+    pub fn list_drift_events(
+        &self,
+        machine_id: Option<&str>,
+        severity: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>, StoreError> {
+        let mut clauses: Vec<String> = Vec::new();
+
+        if let Some(id) = machine_id {
+            clauses.push(format!("machine_id = '{}'", escape_sql_literal(id)));
+        }
+        if let Some(s) = severity {
+            clauses.push(format!("severity = '{}'", escape_sql_literal(s)));
+        }
+
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+
+        let limit = limit.min(1000);
+        let sql = format!(
+            "SELECT id, machine_id, detected_at, metric, current_value, baseline_mean, \
+             baseline_std, z_score, severity, evidence_json \
+             FROM drift_events {where_sql} \
+             ORDER BY detected_at DESC LIMIT {limit}"
+        );
+
+        self.query_json(&sql)
+    }
+
+    /// Detect drift by comparing a current value against a machine baseline.
+    /// Returns a DriftEvent if z-score exceeds the threshold.
+    pub fn check_drift(
+        &self,
+        machine_id: &str,
+        metric: &str,
+        current_value: f64,
+        z_threshold: f64,
+        baseline_window: &str,
+    ) -> Result<Option<DriftEvent>, StoreError> {
+        let baseline = self.get_machine_baseline(machine_id, baseline_window)?;
+
+        let Some(baseline) = baseline else {
+            return Ok(None);
+        };
+
+        // Extract mean and std for the requested metric from the baseline JSON
+        let metrics = &baseline.metrics_json;
+        let metric_data = &metrics[metric];
+
+        if metric_data.is_null() {
+            return Ok(None);
+        }
+
+        let mean = metric_data["mean"].as_f64().unwrap_or(0.0);
+        let std = metric_data["std"].as_f64().unwrap_or(0.0);
+
+        // Avoid division by zero
+        if std < f64::EPSILON {
+            return Ok(None);
+        }
+
+        let z_score = (current_value - mean) / std;
+
+        if z_score.abs() >= z_threshold {
+            let severity = DriftSeverity::from_z_score(z_score);
+            let event = DriftEvent {
+                machine_id: machine_id.to_string(),
+                detected_at: Utc::now().to_rfc3339(),
+                metric: metric.to_string(),
+                current_value,
+                baseline_mean: mean,
+                baseline_std: std,
+                z_score,
+                severity,
+                evidence_json: Some(serde_json::json!({
+                    "baseline_window": baseline_window,
+                    "computed_at": baseline.computed_at,
+                    "threshold": z_threshold,
+                })),
+            };
+
+            // Persist the drift event
+            self.insert_drift_event(&event)?;
+
+            Ok(Some(event))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Insert or replace rows (handles conflicts via PRIMARY KEY)
@@ -1964,5 +2386,378 @@ mod tests {
         // Run vacuum - should skip disabled policy
         let results = store.run_vacuum(true, None).unwrap();
         assert!(results.is_empty());
+    }
+
+    // =============================================================================
+    // Collector Health Tests
+    // =============================================================================
+
+    #[test]
+    fn test_insert_collector_health() {
+        let store = VcStore::open_memory().unwrap();
+
+        let health = CollectorHealth {
+            machine_id: "m1".to_string(),
+            collector: "sysmoni".to_string(),
+            collected_at: "2026-01-30 00:00:00".to_string(),
+            success: true,
+            duration_ms: Some(150),
+            rows_inserted: 42,
+            bytes_parsed: 8192,
+            error_class: None,
+            freshness_seconds: Some(120),
+            payload_hash: Some("abc123".to_string()),
+            collector_version: Some("1.0".to_string()),
+            schema_version: Some("v1".to_string()),
+            cursor_json: None,
+        };
+
+        store.insert_collector_health(&health).unwrap();
+
+        let entries = store
+            .list_collector_health(Some("m1"), Some("sysmoni"), 10)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["machine_id"], "m1");
+        assert_eq!(entries[0]["collector"], "sysmoni");
+        assert_eq!(entries[0]["success"], true);
+    }
+
+    #[test]
+    fn test_collector_health_multiple_entries() {
+        let store = VcStore::open_memory().unwrap();
+
+        // Insert health for two collectors
+        for (collector, ts) in [
+            ("sysmoni", "2026-01-30 00:00:00"),
+            ("caut", "2026-01-30 00:01:00"),
+        ] {
+            let health = CollectorHealth {
+                machine_id: "m1".to_string(),
+                collector: collector.to_string(),
+                collected_at: ts.to_string(),
+                success: true,
+                duration_ms: Some(100),
+                rows_inserted: 10,
+                bytes_parsed: 1024,
+                error_class: None,
+                freshness_seconds: Some(60),
+                payload_hash: None,
+                collector_version: None,
+                schema_version: None,
+                cursor_json: None,
+            };
+            store.insert_collector_health(&health).unwrap();
+        }
+
+        // List all for machine
+        let all = store.list_collector_health(Some("m1"), None, 100).unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Filter by collector
+        let sysmoni_only = store
+            .list_collector_health(Some("m1"), Some("sysmoni"), 100)
+            .unwrap();
+        assert_eq!(sysmoni_only.len(), 1);
+    }
+
+    #[test]
+    fn test_collector_health_failure() {
+        let store = VcStore::open_memory().unwrap();
+
+        let health = CollectorHealth {
+            machine_id: "m1".to_string(),
+            collector: "broken".to_string(),
+            collected_at: "2026-01-30 00:00:00".to_string(),
+            success: false,
+            duration_ms: Some(5000),
+            rows_inserted: 0,
+            bytes_parsed: 0,
+            error_class: Some("timeout".to_string()),
+            freshness_seconds: None,
+            payload_hash: None,
+            collector_version: None,
+            schema_version: None,
+            cursor_json: None,
+        };
+
+        store.insert_collector_health(&health).unwrap();
+
+        let entries = store
+            .list_collector_health(None, Some("broken"), 10)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["success"], false);
+        assert_eq!(entries[0]["error_class"], "timeout");
+    }
+
+    #[test]
+    fn test_freshness_summaries() {
+        let store = VcStore::open_memory().unwrap();
+
+        // Insert a recent successful collection
+        let health = CollectorHealth {
+            machine_id: "m1".to_string(),
+            collector: "sysmoni".to_string(),
+            collected_at: Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            success: true,
+            duration_ms: Some(100),
+            rows_inserted: 10,
+            bytes_parsed: 1024,
+            error_class: None,
+            freshness_seconds: Some(5),
+            payload_hash: None,
+            collector_version: None,
+            schema_version: None,
+            cursor_json: None,
+        };
+        store.insert_collector_health(&health).unwrap();
+
+        let summaries = store.get_freshness_summaries(Some("m1"), 600).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].machine_id, "m1");
+        assert_eq!(summaries[0].collector, "sysmoni");
+        // Recently inserted, freshness should be small (< 10 seconds)
+        assert!(summaries[0].freshness_seconds < 60);
+        assert!(!summaries[0].stale);
+    }
+
+    #[test]
+    fn test_freshness_stale_detection() {
+        let store = VcStore::open_memory().unwrap();
+
+        // Insert an old collection (1 hour ago)
+        let old_ts = (Utc::now() - ChronoDuration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let health = CollectorHealth {
+            machine_id: "m1".to_string(),
+            collector: "slow_collector".to_string(),
+            collected_at: old_ts,
+            success: true,
+            duration_ms: Some(100),
+            rows_inserted: 5,
+            bytes_parsed: 512,
+            error_class: None,
+            freshness_seconds: Some(3600),
+            payload_hash: None,
+            collector_version: None,
+            schema_version: None,
+            cursor_json: None,
+        };
+        store.insert_collector_health(&health).unwrap();
+
+        // Threshold of 600 seconds (10 min) - should be stale
+        let summaries = store.get_freshness_summaries(Some("m1"), 600).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].stale);
+        assert!(summaries[0].freshness_seconds > 600);
+    }
+
+    // =============================================================================
+    // Machine Baseline Tests
+    // =============================================================================
+
+    #[test]
+    fn test_machine_baseline_crud() {
+        let store = VcStore::open_memory().unwrap();
+
+        let metrics = serde_json::json!({
+            "cpu_pct": {"mean": 45.0, "std": 10.0, "p50": 44.0, "p95": 62.0},
+            "mem_pct": {"mean": 60.0, "std": 5.0, "p50": 59.0, "p95": 70.0},
+        });
+
+        store.set_machine_baseline("m1", "7d", &metrics).unwrap();
+
+        // Retrieve
+        let baseline = store.get_machine_baseline("m1", "7d").unwrap();
+        assert!(baseline.is_some());
+        let baseline = baseline.unwrap();
+        assert_eq!(baseline.machine_id, "m1");
+        assert_eq!(baseline.baseline_window, "7d");
+        assert_eq!(baseline.metrics_json["cpu_pct"]["mean"], 45.0);
+
+        // Non-existent
+        let missing = store.get_machine_baseline("m1", "30d").unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_machine_baseline_update() {
+        let store = VcStore::open_memory().unwrap();
+
+        let metrics_v1 = serde_json::json!({"cpu_pct": {"mean": 40.0, "std": 8.0}});
+        store.set_machine_baseline("m1", "7d", &metrics_v1).unwrap();
+
+        let metrics_v2 = serde_json::json!({"cpu_pct": {"mean": 50.0, "std": 12.0}});
+        store.set_machine_baseline("m1", "7d", &metrics_v2).unwrap();
+
+        let baseline = store.get_machine_baseline("m1", "7d").unwrap().unwrap();
+        assert_eq!(baseline.metrics_json["cpu_pct"]["mean"], 50.0);
+    }
+
+    #[test]
+    fn test_list_machine_baselines() {
+        let store = VcStore::open_memory().unwrap();
+
+        store
+            .set_machine_baseline("m1", "7d", &serde_json::json!({"cpu": 40}))
+            .unwrap();
+        store
+            .set_machine_baseline("m1", "30d", &serde_json::json!({"cpu": 42}))
+            .unwrap();
+        store
+            .set_machine_baseline("m2", "7d", &serde_json::json!({"cpu": 55}))
+            .unwrap();
+
+        // All baselines
+        let all = store.list_machine_baselines(None).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Filtered by machine
+        let m1_only = store.list_machine_baselines(Some("m1")).unwrap();
+        assert_eq!(m1_only.len(), 2);
+    }
+
+    // =============================================================================
+    // Drift Detection Tests
+    // =============================================================================
+
+    #[test]
+    fn test_drift_event_insert_and_list() {
+        let store = VcStore::open_memory().unwrap();
+
+        let event = DriftEvent {
+            machine_id: "m1".to_string(),
+            detected_at: Utc::now().to_rfc3339(),
+            metric: "cpu_pct".to_string(),
+            current_value: 95.0,
+            baseline_mean: 45.0,
+            baseline_std: 10.0,
+            z_score: 5.0,
+            severity: DriftSeverity::Critical,
+            evidence_json: Some(serde_json::json!({"baseline_window": "7d"})),
+        };
+
+        store.insert_drift_event(&event).unwrap();
+
+        let events = store.list_drift_events(Some("m1"), None, 100).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["metric"], "cpu_pct");
+        assert_eq!(events[0]["severity"], "critical");
+    }
+
+    #[test]
+    fn test_drift_events_filter_by_severity() {
+        let store = VcStore::open_memory().unwrap();
+
+        // Insert events of different severities
+        for (sev, z) in [
+            (DriftSeverity::Info, 2.0),
+            (DriftSeverity::Warning, 3.5),
+            (DriftSeverity::Critical, 5.0),
+        ] {
+            let event = DriftEvent {
+                machine_id: "m1".to_string(),
+                detected_at: Utc::now().to_rfc3339(),
+                metric: "cpu_pct".to_string(),
+                current_value: 80.0,
+                baseline_mean: 45.0,
+                baseline_std: 10.0,
+                z_score: z,
+                severity: sev,
+                evidence_json: None,
+            };
+            store.insert_drift_event(&event).unwrap();
+        }
+
+        let critical = store
+            .list_drift_events(None, Some("critical"), 100)
+            .unwrap();
+        assert_eq!(critical.len(), 1);
+
+        let all = store.list_drift_events(None, None, 100).unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_check_drift_triggers() {
+        let store = VcStore::open_memory().unwrap();
+
+        // Set up baseline: cpu_pct mean=45, std=10
+        let baseline = serde_json::json!({
+            "cpu_pct": {"mean": 45.0, "std": 10.0},
+        });
+        store.set_machine_baseline("m1", "7d", &baseline).unwrap();
+
+        // Check with value that exceeds 3-sigma threshold
+        let event = store.check_drift("m1", "cpu_pct", 95.0, 3.0, "7d").unwrap();
+        assert!(event.is_some());
+        let event = event.unwrap();
+        assert_eq!(event.severity, DriftSeverity::Critical);
+        assert!((event.z_score - 5.0).abs() < f64::EPSILON);
+
+        // Check with value within normal range
+        let no_event = store.check_drift("m1", "cpu_pct", 50.0, 3.0, "7d").unwrap();
+        assert!(no_event.is_none());
+    }
+
+    #[test]
+    fn test_check_drift_no_baseline() {
+        let store = VcStore::open_memory().unwrap();
+
+        // No baseline exists - should return None (not an error)
+        let result = store.check_drift("m1", "cpu_pct", 95.0, 3.0, "7d").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_check_drift_unknown_metric() {
+        let store = VcStore::open_memory().unwrap();
+
+        let baseline = serde_json::json!({
+            "cpu_pct": {"mean": 45.0, "std": 10.0},
+        });
+        store.set_machine_baseline("m1", "7d", &baseline).unwrap();
+
+        // Unknown metric - should return None
+        let result = store.check_drift("m1", "disk_io", 95.0, 3.0, "7d").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_check_drift_zero_std() {
+        let store = VcStore::open_memory().unwrap();
+
+        let baseline = serde_json::json!({
+            "cpu_pct": {"mean": 45.0, "std": 0.0},
+        });
+        store.set_machine_baseline("m1", "7d", &baseline).unwrap();
+
+        // Zero std deviation - avoid division by zero, return None
+        let result = store.check_drift("m1", "cpu_pct", 95.0, 3.0, "7d").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_drift_severity_from_z_score() {
+        assert_eq!(DriftSeverity::from_z_score(2.0), DriftSeverity::Info);
+        assert_eq!(DriftSeverity::from_z_score(3.0), DriftSeverity::Warning);
+        assert_eq!(DriftSeverity::from_z_score(3.5), DriftSeverity::Warning);
+        assert_eq!(DriftSeverity::from_z_score(4.0), DriftSeverity::Critical);
+        assert_eq!(DriftSeverity::from_z_score(5.0), DriftSeverity::Critical);
+        assert_eq!(DriftSeverity::from_z_score(-4.5), DriftSeverity::Critical);
+    }
+
+    #[test]
+    fn test_drift_severity_roundtrip() {
+        let severities = ["info", "warning", "critical"];
+        for s in severities {
+            let parsed: DriftSeverity = s.parse().unwrap();
+            assert_eq!(parsed.as_str(), s);
+        }
+
+        let err = "invalid".parse::<DriftSeverity>();
+        assert!(err.is_err());
     }
 }

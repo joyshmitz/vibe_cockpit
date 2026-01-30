@@ -198,6 +198,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: RetentionCommands,
     },
+
+    /// Data quality: collector health, freshness, and drift detection
+    Health {
+        #[command(subcommand)]
+        command: HealthCommands,
+    },
 }
 
 /// Retention policy subcommands
@@ -226,6 +232,58 @@ pub enum RetentionCommands {
         /// Number of entries to show
         #[arg(long, default_value = "20")]
         limit: usize,
+    },
+}
+
+/// Data quality subcommands
+#[derive(Subcommand, Debug)]
+pub enum HealthCommands {
+    /// Show freshness summary per collector/machine
+    Freshness {
+        /// Filter by machine ID
+        #[arg(long)]
+        machine: Option<String>,
+
+        /// Staleness threshold in seconds (default: 600 = 10 min)
+        #[arg(long, default_value = "600")]
+        stale_threshold: i64,
+    },
+
+    /// Show recent collector health entries
+    Collectors {
+        /// Filter by machine ID
+        #[arg(long)]
+        machine: Option<String>,
+
+        /// Filter by collector name
+        #[arg(long)]
+        collector: Option<String>,
+
+        /// Number of entries to show
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Show recent drift events
+    Drift {
+        /// Filter by machine ID
+        #[arg(long)]
+        machine: Option<String>,
+
+        /// Filter by severity (info, warning, critical)
+        #[arg(long)]
+        severity: Option<String>,
+
+        /// Number of entries to show
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+
+    /// Show machine baselines
+    Baselines {
+        /// Filter by machine ID
+        #[arg(long)]
+        machine: Option<String>,
     },
 }
 
@@ -1122,6 +1180,80 @@ impl Cli {
                             println!("No vacuum operations recorded yet");
                         } else {
                             print_output(&history, self.format);
+                        }
+                    }
+                }
+            }
+            Commands::Health { command } => {
+                let store = open_store(self.config.as_ref())?;
+
+                match command {
+                    HealthCommands::Freshness {
+                        machine,
+                        stale_threshold,
+                    } => {
+                        let summaries = store
+                            .get_freshness_summaries(machine.as_deref(), stale_threshold)
+                            .map_err(|e| {
+                                CliError::CommandFailed(format!("Failed to get freshness: {e}"))
+                            })?;
+
+                        if summaries.is_empty() {
+                            println!("No collector health data recorded yet");
+                        } else {
+                            print_output(&summaries, self.format);
+                        }
+                    }
+                    HealthCommands::Collectors {
+                        machine,
+                        collector,
+                        limit,
+                    } => {
+                        let entries = store
+                            .list_collector_health(machine.as_deref(), collector.as_deref(), limit)
+                            .map_err(|e| {
+                                CliError::CommandFailed(format!(
+                                    "Failed to list collector health: {e}"
+                                ))
+                            })?;
+
+                        if entries.is_empty() {
+                            println!("No collector health entries found");
+                        } else {
+                            print_output(&entries, self.format);
+                        }
+                    }
+                    HealthCommands::Drift {
+                        machine,
+                        severity,
+                        limit,
+                    } => {
+                        let events = store
+                            .list_drift_events(machine.as_deref(), severity.as_deref(), limit)
+                            .map_err(|e| {
+                                CliError::CommandFailed(format!("Failed to list drift events: {e}"))
+                            })?;
+
+                        if events.is_empty() {
+                            println!("No drift events detected");
+                        } else {
+                            print_output(&events, self.format);
+                        }
+                    }
+                    HealthCommands::Baselines { machine } => {
+                        let baselines =
+                            store
+                                .list_machine_baselines(machine.as_deref())
+                                .map_err(|e| {
+                                    CliError::CommandFailed(format!(
+                                        "Failed to list baselines: {e}"
+                                    ))
+                                })?;
+
+                        if baselines.is_empty() {
+                            println!("No machine baselines computed yet");
+                        } else {
+                            print_output(&baselines, self.format);
                         }
                     }
                 }
@@ -2103,6 +2235,130 @@ mod tests {
             }
         } else {
             panic!("Expected Retention command");
+        }
+    }
+
+    // =============================================================================
+    // Commands::Health Tests
+    // =============================================================================
+
+    #[test]
+    fn test_health_freshness_parse() {
+        let cli = Cli::parse_from(["vc", "health", "freshness"]);
+        if let Commands::Health { command } = cli.command {
+            if let HealthCommands::Freshness {
+                machine,
+                stale_threshold,
+            } = command
+            {
+                assert!(machine.is_none());
+                assert_eq!(stale_threshold, 600);
+            } else {
+                panic!("Expected Health::Freshness");
+            }
+        } else {
+            panic!("Expected Health command");
+        }
+    }
+
+    #[test]
+    fn test_health_freshness_with_options() {
+        let cli = Cli::parse_from([
+            "vc",
+            "health",
+            "freshness",
+            "--machine",
+            "m1",
+            "--stale-threshold",
+            "300",
+        ]);
+        if let Commands::Health { command } = cli.command {
+            if let HealthCommands::Freshness {
+                machine,
+                stale_threshold,
+            } = command
+            {
+                assert_eq!(machine.as_deref(), Some("m1"));
+                assert_eq!(stale_threshold, 300);
+            } else {
+                panic!("Expected Health::Freshness");
+            }
+        } else {
+            panic!("Expected Health command");
+        }
+    }
+
+    #[test]
+    fn test_health_collectors_parse() {
+        let cli = Cli::parse_from([
+            "vc",
+            "health",
+            "collectors",
+            "--machine",
+            "m1",
+            "--collector",
+            "sysmoni",
+            "--limit",
+            "5",
+        ]);
+        if let Commands::Health { command } = cli.command {
+            if let HealthCommands::Collectors {
+                machine,
+                collector,
+                limit,
+            } = command
+            {
+                assert_eq!(machine.as_deref(), Some("m1"));
+                assert_eq!(collector.as_deref(), Some("sysmoni"));
+                assert_eq!(limit, 5);
+            } else {
+                panic!("Expected Health::Collectors");
+            }
+        } else {
+            panic!("Expected Health command");
+        }
+    }
+
+    #[test]
+    fn test_health_drift_parse() {
+        let cli = Cli::parse_from([
+            "vc",
+            "health",
+            "drift",
+            "--severity",
+            "critical",
+            "--limit",
+            "10",
+        ]);
+        if let Commands::Health { command } = cli.command {
+            if let HealthCommands::Drift {
+                machine,
+                severity,
+                limit,
+            } = command
+            {
+                assert!(machine.is_none());
+                assert_eq!(severity.as_deref(), Some("critical"));
+                assert_eq!(limit, 10);
+            } else {
+                panic!("Expected Health::Drift");
+            }
+        } else {
+            panic!("Expected Health command");
+        }
+    }
+
+    #[test]
+    fn test_health_baselines_parse() {
+        let cli = Cli::parse_from(["vc", "health", "baselines", "--machine", "m1"]);
+        if let Commands::Health { command } = cli.command {
+            if let HealthCommands::Baselines { machine } = command {
+                assert_eq!(machine.as_deref(), Some("m1"));
+            } else {
+                panic!("Expected Health::Baselines");
+            }
+        } else {
+            panic!("Expected Health command");
         }
     }
 
