@@ -68,6 +68,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "collector_health",
         sql: include_str!("migrations/011_collector_health.sql"),
     },
+    Migration {
+        version: 12,
+        name: "health_scores",
+        sql: include_str!("migrations/012_health_scores.sql"),
+    },
 ];
 
 /// Run all pending migrations

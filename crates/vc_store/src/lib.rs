@@ -1234,7 +1234,7 @@ fn json_value_to_sql(value: &serde_json::Value) -> Box<dyn duckdb::ToSql> {
     }
 }
 
-fn escape_sql_literal(value: &str) -> String {
+pub fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
 }
 

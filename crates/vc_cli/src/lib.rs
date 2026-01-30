@@ -285,6 +285,13 @@ pub enum HealthCommands {
         #[arg(long)]
         machine: Option<String>,
     },
+
+    /// Show health scores (latest summary per machine)
+    Score {
+        /// Show score for a specific machine
+        #[arg(long)]
+        machine: Option<String>,
+    },
 }
 
 /// Configuration subcommands
@@ -1254,6 +1261,28 @@ impl Cli {
                             println!("No machine baselines computed yet");
                         } else {
                             print_output(&baselines, self.format);
+                        }
+                    }
+                    HealthCommands::Score { machine } => {
+                        let qb = vc_query::QueryBuilder::new(&store);
+
+                        if let Some(machine_id) = &machine {
+                            let score = qb.machine_health(machine_id).map_err(|e| {
+                                CliError::CommandFailed(format!("Failed to get health score: {e}"))
+                            })?;
+                            print_output(&score, self.format);
+                        } else {
+                            let summaries = qb.list_health_summaries().map_err(|e| {
+                                CliError::CommandFailed(format!(
+                                    "Failed to list health summaries: {e}"
+                                ))
+                            })?;
+
+                            if summaries.is_empty() {
+                                println!("No health scores computed yet");
+                            } else {
+                                print_output(&summaries, self.format);
+                            }
                         }
                     }
                 }
@@ -2356,6 +2385,34 @@ mod tests {
                 assert_eq!(machine.as_deref(), Some("m1"));
             } else {
                 panic!("Expected Health::Baselines");
+            }
+        } else {
+            panic!("Expected Health command");
+        }
+    }
+
+    #[test]
+    fn test_health_score_parse() {
+        let cli = Cli::parse_from(["vc", "health", "score"]);
+        if let Commands::Health { command } = cli.command {
+            if let HealthCommands::Score { machine } = command {
+                assert!(machine.is_none());
+            } else {
+                panic!("Expected Health::Score");
+            }
+        } else {
+            panic!("Expected Health command");
+        }
+    }
+
+    #[test]
+    fn test_health_score_with_machine() {
+        let cli = Cli::parse_from(["vc", "health", "score", "--machine", "m1"]);
+        if let Commands::Health { command } = cli.command {
+            if let HealthCommands::Score { machine } = command {
+                assert_eq!(machine.as_deref(), Some("m1"));
+            } else {
+                panic!("Expected Health::Score");
             }
         } else {
             panic!("Expected Health command");
