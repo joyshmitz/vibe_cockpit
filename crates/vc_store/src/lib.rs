@@ -1169,6 +1169,137 @@ impl VcStore {
         }
     }
 
+    // =========================================================================
+    // Alert Delivery Log Methods
+    // =========================================================================
+
+    /// Log an alert delivery attempt
+    pub fn insert_delivery_log(
+        &self,
+        alert_id: &str,
+        channel_type: &str,
+        status: &str,
+        error_message: Option<&str>,
+        duration_ms: Option<i64>,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+
+        let next_id: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM alert_delivery_log",
+            [],
+            |row| row.get(0),
+        )?;
+
+        conn.execute(
+            "INSERT INTO alert_delivery_log (id, alert_id, channel_type, status, error_message, duration_ms)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            duckdb::params![next_id, alert_id, channel_type, status, error_message, duration_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Update delivery status (e.g., after retry)
+    pub fn update_delivery_status(
+        &self,
+        delivery_id: i64,
+        status: &str,
+        error_message: Option<&str>,
+        retry_count: i32,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE alert_delivery_log SET status = ?, error_message = ?, retry_count = ? WHERE id = ?",
+            duckdb::params![status, error_message, retry_count, delivery_id],
+        )?;
+        Ok(())
+    }
+
+    /// List delivery logs for an alert
+    pub fn list_delivery_logs(
+        &self,
+        alert_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let limit = if limit == 0 { 50 } else { limit.min(1000) };
+
+        let (sql, params): (String, Vec<Box<dyn duckdb::ToSql>>) = if let Some(aid) = alert_id {
+            (
+                format!(
+                    "SELECT id, alert_id, channel_type, CAST(delivered_at AS TEXT) AS delivered_at, \
+                     status, error_message, retry_count, duration_ms \
+                     FROM alert_delivery_log WHERE alert_id = ? \
+                     ORDER BY delivered_at DESC LIMIT {}",
+                    limit
+                ),
+                vec![Box::new(aid.to_string())],
+            )
+        } else {
+            (
+                format!(
+                    "SELECT id, alert_id, channel_type, CAST(delivered_at AS TEXT) AS delivered_at, \
+                     status, error_message, retry_count, duration_ms \
+                     FROM alert_delivery_log \
+                     ORDER BY delivered_at DESC LIMIT {}",
+                    limit
+                ),
+                vec![],
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "alert_id": row.get::<_, String>(1)?,
+                "channel_type": row.get::<_, String>(2)?,
+                "delivered_at": row.get::<_, Option<String>>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "error_message": row.get::<_, Option<String>>(5)?,
+                "retry_count": row.get::<_, i32>(6)?,
+                "duration_ms": row.get::<_, Option<i64>>(7)?,
+            }))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Get delivery summary stats (total, succeeded, failed per channel)
+    pub fn delivery_summary(&self) -> Result<Vec<serde_json::Value>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT channel_type, \
+                    COUNT(*) AS total, \
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS succeeded, \
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed, \
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count \
+             FROM alert_delivery_log \
+             GROUP BY channel_type \
+             ORDER BY channel_type",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "channel_type": row.get::<_, String>(0)?,
+                "total": row.get::<_, i64>(1)?,
+                "succeeded": row.get::<_, i64>(2)?,
+                "failed": row.get::<_, i64>(3)?,
+                "pending": row.get::<_, i64>(4)?,
+            }))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     /// Insert or replace rows (handles conflicts via PRIMARY KEY)
     /// Uses INSERT OR REPLACE which replaces the row if a conflict occurs
     pub fn upsert_json(
@@ -2759,5 +2890,204 @@ mod tests {
 
         let err = "invalid".parse::<DriftSeverity>();
         assert!(err.is_err());
+    }
+
+    // =========================================================================
+    // Alert Delivery Log Tests
+    // =========================================================================
+
+    #[test]
+    fn test_insert_delivery_log() {
+        let store = VcStore::open_memory().unwrap();
+        store
+            .insert_delivery_log("alert-1", "slack", "success", None, Some(150))
+            .unwrap();
+
+        let logs = store.list_delivery_logs(Some("alert-1"), 10).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["alert_id"], "alert-1");
+        assert_eq!(logs[0]["channel_type"], "slack");
+        assert_eq!(logs[0]["status"], "success");
+        assert!(logs[0]["error_message"].is_null());
+        assert_eq!(logs[0]["duration_ms"], 150);
+    }
+
+    #[test]
+    fn test_delivery_log_with_error() {
+        let store = VcStore::open_memory().unwrap();
+        store
+            .insert_delivery_log(
+                "alert-2",
+                "discord",
+                "failed",
+                Some("Connection refused"),
+                Some(5000),
+            )
+            .unwrap();
+
+        let logs = store.list_delivery_logs(Some("alert-2"), 10).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["status"], "failed");
+        assert_eq!(logs[0]["error_message"], "Connection refused");
+    }
+
+    #[test]
+    fn test_delivery_log_multiple_channels() {
+        let store = VcStore::open_memory().unwrap();
+        store
+            .insert_delivery_log("alert-3", "slack", "success", None, Some(100))
+            .unwrap();
+        store
+            .insert_delivery_log("alert-3", "discord", "success", None, Some(200))
+            .unwrap();
+        store
+            .insert_delivery_log(
+                "alert-3",
+                "desktop",
+                "failed",
+                Some("notify-send not found"),
+                None,
+            )
+            .unwrap();
+
+        let logs = store.list_delivery_logs(Some("alert-3"), 10).unwrap();
+        assert_eq!(logs.len(), 3);
+    }
+
+    #[test]
+    fn test_delivery_log_filter_by_alert() {
+        let store = VcStore::open_memory().unwrap();
+        store
+            .insert_delivery_log("alert-a", "slack", "success", None, None)
+            .unwrap();
+        store
+            .insert_delivery_log("alert-b", "slack", "success", None, None)
+            .unwrap();
+
+        let logs_a = store.list_delivery_logs(Some("alert-a"), 10).unwrap();
+        assert_eq!(logs_a.len(), 1);
+        assert_eq!(logs_a[0]["alert_id"], "alert-a");
+
+        let logs_b = store.list_delivery_logs(Some("alert-b"), 10).unwrap();
+        assert_eq!(logs_b.len(), 1);
+        assert_eq!(logs_b[0]["alert_id"], "alert-b");
+
+        // All logs (no filter)
+        let all = store.list_delivery_logs(None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_update_delivery_status() {
+        let store = VcStore::open_memory().unwrap();
+        store
+            .insert_delivery_log("alert-retry", "webhook", "pending", None, None)
+            .unwrap();
+
+        let logs = store.list_delivery_logs(Some("alert-retry"), 10).unwrap();
+        let delivery_id = logs[0]["id"].as_i64().unwrap();
+
+        store
+            .update_delivery_status(delivery_id, "success", None, 1)
+            .unwrap();
+
+        let logs = store.list_delivery_logs(Some("alert-retry"), 10).unwrap();
+        assert_eq!(logs[0]["status"], "success");
+        assert_eq!(logs[0]["retry_count"], 1);
+    }
+
+    #[test]
+    fn test_update_delivery_status_with_error() {
+        let store = VcStore::open_memory().unwrap();
+        store
+            .insert_delivery_log("alert-fail", "slack", "pending", None, None)
+            .unwrap();
+
+        let logs = store.list_delivery_logs(Some("alert-fail"), 10).unwrap();
+        let delivery_id = logs[0]["id"].as_i64().unwrap();
+
+        store
+            .update_delivery_status(delivery_id, "failed", Some("timeout after 30s"), 3)
+            .unwrap();
+
+        let logs = store.list_delivery_logs(Some("alert-fail"), 10).unwrap();
+        assert_eq!(logs[0]["status"], "failed");
+        assert_eq!(logs[0]["error_message"], "timeout after 30s");
+        assert_eq!(logs[0]["retry_count"], 3);
+    }
+
+    #[test]
+    fn test_delivery_summary() {
+        let store = VcStore::open_memory().unwrap();
+
+        // Slack: 2 success, 1 failed
+        store
+            .insert_delivery_log("a1", "slack", "success", None, None)
+            .unwrap();
+        store
+            .insert_delivery_log("a2", "slack", "success", None, None)
+            .unwrap();
+        store
+            .insert_delivery_log("a3", "slack", "failed", Some("err"), None)
+            .unwrap();
+
+        // Discord: 1 success
+        store
+            .insert_delivery_log("a1", "discord", "success", None, None)
+            .unwrap();
+
+        // Desktop: 1 pending
+        store
+            .insert_delivery_log("a1", "desktop", "pending", None, None)
+            .unwrap();
+
+        let summary = store.delivery_summary().unwrap();
+        assert_eq!(summary.len(), 3);
+
+        let desktop = summary
+            .iter()
+            .find(|s| s["channel_type"] == "desktop")
+            .unwrap();
+        assert_eq!(desktop["total"], 1);
+        assert_eq!(desktop["pending"], 1);
+
+        let discord = summary
+            .iter()
+            .find(|s| s["channel_type"] == "discord")
+            .unwrap();
+        assert_eq!(discord["total"], 1);
+        assert_eq!(discord["succeeded"], 1);
+
+        let slack = summary
+            .iter()
+            .find(|s| s["channel_type"] == "slack")
+            .unwrap();
+        assert_eq!(slack["total"], 3);
+        assert_eq!(slack["succeeded"], 2);
+        assert_eq!(slack["failed"], 1);
+    }
+
+    #[test]
+    fn test_delivery_log_limit() {
+        let store = VcStore::open_memory().unwrap();
+        for i in 0..10 {
+            store
+                .insert_delivery_log(&format!("alert-{i}"), "slack", "success", None, None)
+                .unwrap();
+        }
+
+        let logs = store.list_delivery_logs(None, 5).unwrap();
+        assert_eq!(logs.len(), 5);
+
+        // Zero limit defaults to 50
+        let logs = store.list_delivery_logs(None, 0).unwrap();
+        assert_eq!(logs.len(), 10);
+    }
+
+    #[test]
+    fn test_delivery_summary_empty() {
+        let store = VcStore::open_memory().unwrap();
+        let summary = store.delivery_summary().unwrap();
+        assert!(summary.is_empty());
     }
 }

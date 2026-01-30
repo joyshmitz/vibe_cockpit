@@ -440,6 +440,298 @@ impl AlertChannel for MemoryChannel {
 }
 
 // =============================================================================
+// Slack Channel
+// =============================================================================
+
+/// Slack channel - sends alerts as formatted Slack messages via incoming webhook
+pub struct SlackChannel {
+    webhook_url: String,
+    client: reqwest::Client,
+    min_severity: Severity,
+}
+
+impl SlackChannel {
+    pub fn new(webhook_url: impl Into<String>, min_severity: Severity) -> Self {
+        Self {
+            webhook_url: webhook_url.into(),
+            client: reqwest::Client::new(),
+            min_severity,
+        }
+    }
+
+    fn severity_color(severity: &Severity) -> &'static str {
+        match severity {
+            Severity::Info => "#36a64f",
+            Severity::Warning => "#daa038",
+            Severity::Critical => "#d50000",
+        }
+    }
+
+    fn severity_emoji(severity: &Severity) -> &'static str {
+        match severity {
+            Severity::Info => ":information_source:",
+            Severity::Warning => ":warning:",
+            Severity::Critical => ":rotating_light:",
+        }
+    }
+}
+
+#[async_trait]
+impl AlertChannel for SlackChannel {
+    fn name(&self) -> &str {
+        "slack"
+    }
+
+    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+        if alert.severity < self.min_severity {
+            return Ok(());
+        }
+
+        let payload = serde_json::json!({
+            "attachments": [{
+                "color": Self::severity_color(&alert.severity),
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": format!("{} {}", Self::severity_emoji(&alert.severity), alert.title),
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": alert.message,
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": format!("*Severity:* {:?} | *Rule:* {} | *Time:* {}", alert.severity, alert.rule_id, alert.fired_at.format("%Y-%m-%d %H:%M:%S UTC")),
+                            }
+                        ]
+                    }
+                ]
+            }]
+        });
+
+        let response = self
+            .client
+            .post(&self.webhook_url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| AlertError::DeliveryFailed(format!("Slack webhook failed: {e}")))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(AlertError::DeliveryFailed(format!(
+                "Slack returned status: {}",
+                response.status()
+            )))
+        }
+    }
+}
+
+// =============================================================================
+// Discord Channel
+// =============================================================================
+
+/// Discord channel - sends alerts as rich embeds via Discord webhook
+pub struct DiscordChannel {
+    webhook_url: String,
+    client: reqwest::Client,
+    min_severity: Severity,
+}
+
+impl DiscordChannel {
+    pub fn new(webhook_url: impl Into<String>, min_severity: Severity) -> Self {
+        Self {
+            webhook_url: webhook_url.into(),
+            client: reqwest::Client::new(),
+            min_severity,
+        }
+    }
+
+    fn severity_color_int(severity: &Severity) -> u32 {
+        match severity {
+            Severity::Info => 0x36_a6_4f,
+            Severity::Warning => 0xda_a0_38,
+            Severity::Critical => 0xd5_00_00,
+        }
+    }
+}
+
+#[async_trait]
+impl AlertChannel for DiscordChannel {
+    fn name(&self) -> &str {
+        "discord"
+    }
+
+    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+        if alert.severity < self.min_severity {
+            return Ok(());
+        }
+
+        let payload = serde_json::json!({
+            "embeds": [{
+                "title": alert.title,
+                "description": alert.message,
+                "color": Self::severity_color_int(&alert.severity),
+                "fields": [
+                    {"name": "Severity", "value": format!("{:?}", alert.severity), "inline": true},
+                    {"name": "Rule", "value": &alert.rule_id, "inline": true},
+                ],
+                "timestamp": alert.fired_at.to_rfc3339(),
+                "footer": {"text": "Vibe Cockpit Alert"},
+            }]
+        });
+
+        let response = self
+            .client
+            .post(&self.webhook_url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| AlertError::DeliveryFailed(format!("Discord webhook failed: {e}")))?;
+
+        if response.status().is_success() || response.status().as_u16() == 204 {
+            Ok(())
+        } else {
+            Err(AlertError::DeliveryFailed(format!(
+                "Discord returned status: {}",
+                response.status()
+            )))
+        }
+    }
+}
+
+// =============================================================================
+// Desktop Channel
+// =============================================================================
+
+/// Desktop notification channel - uses OS-native notification APIs
+pub struct DesktopChannel {
+    min_severity: Severity,
+}
+
+impl DesktopChannel {
+    pub fn new(min_severity: Severity) -> Self {
+        Self { min_severity }
+    }
+}
+
+#[async_trait]
+impl AlertChannel for DesktopChannel {
+    fn name(&self) -> &str {
+        "desktop"
+    }
+
+    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+        if alert.severity < self.min_severity {
+            return Ok(());
+        }
+
+        let title = format!("VC Alert: {}", alert.title);
+        let body = &alert.message;
+
+        #[cfg(target_os = "macos")]
+        {
+            let script = format!(
+                r#"display notification "{}" with title "{}""#,
+                body.replace('"', r#"\""#),
+                title.replace('"', r#"\""#),
+            );
+
+            tokio::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output()
+                .await
+                .map_err(|e| AlertError::DeliveryFailed(format!("osascript failed: {e}")))?;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            tokio::process::Command::new("notify-send")
+                .arg("--urgency")
+                .arg(match alert.severity {
+                    Severity::Critical => "critical",
+                    Severity::Warning => "normal",
+                    Severity::Info => "low",
+                })
+                .arg(&title)
+                .arg(body)
+                .output()
+                .await
+                .map_err(|e| AlertError::DeliveryFailed(format!("notify-send failed: {e}")))?;
+        }
+
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Channel Manager
+// =============================================================================
+
+/// Result of a single channel delivery attempt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryResult {
+    pub channel: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Manages multiple alert delivery channels and dispatches alerts
+pub struct ChannelManager {
+    channels: Vec<Box<dyn AlertChannel>>,
+}
+
+impl ChannelManager {
+    pub fn new() -> Self {
+        Self {
+            channels: Vec::new(),
+        }
+    }
+
+    pub fn add_channel(&mut self, channel: Box<dyn AlertChannel>) {
+        self.channels.push(channel);
+    }
+
+    /// Deliver an alert to all registered channels
+    pub async fn deliver_all(&self, alert: &Alert) -> Vec<DeliveryResult> {
+        let mut results = Vec::with_capacity(self.channels.len());
+
+        for channel in &self.channels {
+            let result = channel.deliver(alert).await;
+            results.push(DeliveryResult {
+                channel: channel.name().to_string(),
+                success: result.is_ok(),
+                error: result.err().map(|e| e.to_string()),
+            });
+        }
+
+        results
+    }
+
+    /// Number of registered channels
+    pub fn channel_count(&self) -> usize {
+        self.channels.len()
+    }
+}
+
+impl Default for ChannelManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
 // Alert Builder
 // =============================================================================
 
@@ -1174,5 +1466,296 @@ mod tests {
         assert_eq!(alert.machine_id, Some("server-1".to_string()));
         assert_eq!(alert.context["metric"], 95.5);
         assert_eq!(alert.context["threshold"], 90.0);
+    }
+
+    // ==========================================================================
+    // Slack Channel Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_slack_channel_name() {
+        let channel = SlackChannel::new("https://hooks.slack.com/test", Severity::Info);
+        assert_eq!(channel.name(), "slack");
+    }
+
+    #[test]
+    fn test_slack_severity_color() {
+        assert_eq!(SlackChannel::severity_color(&Severity::Info), "#36a64f");
+        assert_eq!(SlackChannel::severity_color(&Severity::Warning), "#daa038");
+        assert_eq!(SlackChannel::severity_color(&Severity::Critical), "#d50000");
+    }
+
+    #[test]
+    fn test_slack_severity_emoji() {
+        assert_eq!(
+            SlackChannel::severity_emoji(&Severity::Info),
+            ":information_source:"
+        );
+        assert_eq!(
+            SlackChannel::severity_emoji(&Severity::Warning),
+            ":warning:"
+        );
+        assert_eq!(
+            SlackChannel::severity_emoji(&Severity::Critical),
+            ":rotating_light:"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_slack_channel_filters_below_min_severity() {
+        let channel = SlackChannel::new("https://hooks.slack.com/test", Severity::Critical);
+
+        let alert = Alert {
+            id: None,
+            rule_id: "test".to_string(),
+            fired_at: Utc::now(),
+            severity: Severity::Info, // Below Critical min
+            title: "Test".to_string(),
+            message: "Test".to_string(),
+            machine_id: None,
+            context: serde_json::json!({}),
+        };
+
+        // Should succeed (skip) for below-threshold severity
+        assert!(channel.deliver(&alert).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_slack_channel_filters_warning_below_critical() {
+        let channel = SlackChannel::new("https://hooks.slack.com/test", Severity::Critical);
+
+        let alert = Alert {
+            id: None,
+            rule_id: "test".to_string(),
+            fired_at: Utc::now(),
+            severity: Severity::Warning,
+            title: "Test".to_string(),
+            message: "Test".to_string(),
+            machine_id: None,
+            context: serde_json::json!({}),
+        };
+
+        assert!(channel.deliver(&alert).await.is_ok());
+    }
+
+    // ==========================================================================
+    // Discord Channel Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_discord_channel_name() {
+        let channel = DiscordChannel::new("https://discord.com/api/webhooks/test", Severity::Info);
+        assert_eq!(channel.name(), "discord");
+    }
+
+    #[test]
+    fn test_discord_severity_color_int() {
+        assert_eq!(
+            DiscordChannel::severity_color_int(&Severity::Info),
+            0x36a64f
+        );
+        assert_eq!(
+            DiscordChannel::severity_color_int(&Severity::Warning),
+            0xdaa038
+        );
+        assert_eq!(
+            DiscordChannel::severity_color_int(&Severity::Critical),
+            0xd50000
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discord_channel_filters_below_min_severity() {
+        let channel =
+            DiscordChannel::new("https://discord.com/api/webhooks/test", Severity::Warning);
+
+        let alert = Alert {
+            id: None,
+            rule_id: "test".to_string(),
+            fired_at: Utc::now(),
+            severity: Severity::Info, // Below Warning min
+            title: "Test".to_string(),
+            message: "Test".to_string(),
+            machine_id: None,
+            context: serde_json::json!({}),
+        };
+
+        assert!(channel.deliver(&alert).await.is_ok());
+    }
+
+    // ==========================================================================
+    // Desktop Channel Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_desktop_channel_name() {
+        let channel = DesktopChannel::new(Severity::Info);
+        assert_eq!(channel.name(), "desktop");
+    }
+
+    #[tokio::test]
+    async fn test_desktop_channel_filters_below_min_severity() {
+        let channel = DesktopChannel::new(Severity::Critical);
+
+        let alert = Alert {
+            id: None,
+            rule_id: "test".to_string(),
+            fired_at: Utc::now(),
+            severity: Severity::Warning, // Below Critical min
+            title: "Test".to_string(),
+            message: "Test".to_string(),
+            machine_id: None,
+            context: serde_json::json!({}),
+        };
+
+        assert!(channel.deliver(&alert).await.is_ok());
+    }
+
+    // ==========================================================================
+    // DeliveryResult Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_delivery_result_success() {
+        let result = DeliveryResult {
+            channel: "slack".to_string(),
+            success: true,
+            error: None,
+        };
+        assert!(result.success);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_delivery_result_failure() {
+        let result = DeliveryResult {
+            channel: "webhook".to_string(),
+            success: false,
+            error: Some("Connection refused".to_string()),
+        };
+        assert!(!result.success);
+        assert_eq!(result.error.as_deref(), Some("Connection refused"));
+    }
+
+    #[test]
+    fn test_delivery_result_serialization() {
+        let result = DeliveryResult {
+            channel: "slack".to_string(),
+            success: true,
+            error: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"channel\":\"slack\""));
+        assert!(json.contains("\"success\":true"));
+
+        let parsed: DeliveryResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.channel, "slack");
+        assert!(parsed.success);
+    }
+
+    // ==========================================================================
+    // ChannelManager Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_channel_manager_empty() {
+        let manager = ChannelManager::new();
+        assert_eq!(manager.channel_count(), 0);
+    }
+
+    #[test]
+    fn test_channel_manager_default() {
+        let manager = ChannelManager::default();
+        assert_eq!(manager.channel_count(), 0);
+    }
+
+    #[test]
+    fn test_channel_manager_add_channel() {
+        let mut manager = ChannelManager::new();
+        manager.add_channel(Box::new(MemoryChannel::new()));
+        assert_eq!(manager.channel_count(), 1);
+
+        manager.add_channel(Box::new(LogChannel::info()));
+        assert_eq!(manager.channel_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_channel_manager_deliver_all() {
+        let memory = std::sync::Arc::new(MemoryChannel::new());
+        let mut manager = ChannelManager::new();
+        manager.add_channel(Box::new(MemoryChannel::new()));
+        manager.add_channel(Box::new(LogChannel::info()));
+
+        let alert = Alert {
+            id: None,
+            rule_id: "test".to_string(),
+            fired_at: Utc::now(),
+            severity: Severity::Warning,
+            title: "Test".to_string(),
+            message: "Test message".to_string(),
+            machine_id: None,
+            context: serde_json::json!({}),
+        };
+
+        let results = manager.deliver_all(&alert).await;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success));
+    }
+
+    #[tokio::test]
+    async fn test_channel_manager_partial_failure() {
+        let mut manager = ChannelManager::new();
+
+        // Add a memory channel (will succeed)
+        manager.add_channel(Box::new(MemoryChannel::new()));
+
+        // Add a mock channel that fails
+        let mut mock = MockChannel::new();
+        mock.expect_name().return_const("failing".to_string());
+        mock.expect_deliver()
+            .returning(|_| Err(AlertError::DeliveryFailed("network error".to_string())));
+        manager.add_channel(Box::new(mock));
+
+        let alert = Alert {
+            id: None,
+            rule_id: "test".to_string(),
+            fired_at: Utc::now(),
+            severity: Severity::Critical,
+            title: "Critical".to_string(),
+            message: "Critical alert".to_string(),
+            machine_id: None,
+            context: serde_json::json!({}),
+        };
+
+        let results = manager.deliver_all(&alert).await;
+        assert_eq!(results.len(), 2);
+
+        // First channel succeeded
+        assert!(results[0].success);
+        assert_eq!(results[0].channel, "memory");
+
+        // Second channel failed
+        assert!(!results[1].success);
+        assert_eq!(results[1].channel, "failing");
+        assert!(results[1].error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_channel_manager_empty_deliver() {
+        let manager = ChannelManager::new();
+
+        let alert = Alert {
+            id: None,
+            rule_id: "test".to_string(),
+            fired_at: Utc::now(),
+            severity: Severity::Info,
+            title: "Test".to_string(),
+            message: "Test".to_string(),
+            machine_id: None,
+            context: serde_json::json!({}),
+        };
+
+        let results = manager.deliver_all(&alert).await;
+        assert!(results.is_empty());
     }
 }
