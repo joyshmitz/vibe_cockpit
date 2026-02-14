@@ -1,4 +1,4 @@
-# AGENTS.md — dcg (Destructive Command Guard)
+# AGENTS.md — vibe_cockpit
 
 > Guidelines for AI coding agents working in this Rust codebase.
 
@@ -20,8 +20,6 @@ If I tell you to do something, even if it goes against what follows below, YOU M
 
 ## Irreversible Git & Filesystem Actions — DO NOT EVER BREAK GLASS
 
-> **Note:** This project exists specifically to block these dangerous commands for AI agents. Practice what we preach.
-
 1. **Absolutely forbidden commands:** `git reset --hard`, `git clean -fd`, `rm -rf`, or any command that can delete or overwrite code/data must never be run unless the user explicitly provides the exact command and states, in the same message, that they understand and want the irreversible consequences.
 2. **No guessing:** If there is any uncertainty about what a command might delete or overwrite, stop immediately and ask the user for specific approval. "I think it's safe" is never acceptable.
 3. **Safer alternatives first:** When cleanup or rollbacks are needed, request permission to use non-destructive options (`git status`, `git diff`, `git stash`, copying to backups) before ever considering a destructive command.
@@ -41,8 +39,6 @@ If I tell you to do something, even if it goes against what follows below, YOU M
   git push origin main:master
   ```
 
-**Why this matters:** The `dcg update` command and install URLs historically referenced `master`. If `master` falls behind `main`, users get stale code. We had a bug where `master` was **497 commits behind**, causing users to see old installer behavior.
-
 **If you see `master` referenced anywhere:**
 1. Update it to `main`
 2. Ensure `master` is synchronized: `git push origin main:master`
@@ -53,32 +49,46 @@ If I tell you to do something, even if it goes against what follows below, YOU M
 
 We only use **Cargo** in this project, NEVER any other package manager.
 
-- **Edition:** Rust 2024 (nightly required — see `rust-toolchain.toml`)
+- **Edition:** Rust 2024 (nightly required)
 - **Dependency versions:** Explicit versions for stability
-- **Configuration:** Cargo.toml only
+- **Configuration:** Cargo.toml workspace with `workspace = true` pattern
 - **Unsafe code:** Forbidden (`#![forbid(unsafe_code)]`)
+
+### Async Runtime: Tokio
+
+This project uses **tokio** with the `full` feature set for all async operations.
 
 ### Key Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| `serde` + `serde_json` | JSON parsing for Claude Code hook protocol |
-| `fancy-regex` | Advanced regex with lookahead/lookbehind |
-| `memchr` | SIMD-accelerated substring search |
-| `colored` | Terminal colors with TTY detection |
+| `tokio` | Async runtime (full features) |
+| `duckdb` | Embedded analytical database (bundled build) |
+| `serde` + `serde_json` + `toml` | Serialization (JSON, TOML config) |
+| `clap` | CLI argument parsing (derive mode) |
+| `ratatui` + `crossterm` | Terminal UI rendering |
+| `axum` + `tower` + `tower-http` | Web server, middleware, CORS, static files, tracing |
+| `chrono` | Date/time handling with serde support |
+| `thiserror` + `anyhow` | Error type derivation and ad-hoc errors |
+| `tracing` + `tracing-subscriber` | Structured logging with env-filter and JSON output |
+| `reqwest` | HTTP client for webhook delivery and external APIs |
+| `russh` + `russh-keys` | SSH client for remote machine data collection |
+| `uuid` | Unique IDs (v4, serde-compatible) |
+| `regex` | Pattern matching in alert conditions |
+| `async-trait` | Async trait support for collector and alert channel interfaces |
+| `dashmap` | Concurrent hash maps for alert cooldown tracking |
+| `futures` | Async stream and utility combinators |
+| `rand` | Random number generation for oracle predictions |
+| `proptest` | Property-based testing (dev) |
+| `mockall` | Trait mocking for unit tests (dev) |
 | `vergen-gix` | Build metadata embedding (build.rs) |
 
 ### Release Profile
 
-The release build optimizes for binary size:
+The release build optimizes for performance:
 
 ```toml
-[profile.release]
-opt-level = "z"     # Optimize for size (lean binary for distribution)
-lto = true          # Link-time optimization
-codegen-units = 1   # Single codegen unit for better optimization
-panic = "abort"     # Smaller binary, no unwinding overhead
-strip = true        # Remove debug symbols
+# (workspace-level profile not yet defined — add when ready for distribution)
 ```
 
 ---
@@ -116,33 +126,16 @@ We do not care about backwards compatibility—we're in early development with n
 
 ---
 
-## Output Style
-
-This tool has two output modes:
-
-- **JSON to stdout:** For Claude Code hook protocol (`hookSpecificOutput` with `permissionDecision: "deny"`)
-- **Colorful warning to stderr:** For human visibility when commands are blocked
-
-Output behavior:
-- **Deny:** Colorful warning to stderr + JSON to stdout
-- **Allow:** No output (silent exit)
-- **--version/-V:** Version info with build metadata to stderr
-- **--help/-h:** Usage information to stderr
-
-Colors are automatically disabled when stderr is not a TTY (e.g., piped to file).
-
----
-
 ## Compiler Checks (CRITICAL)
 
 **After any substantive code changes, you MUST verify no errors were introduced:**
 
 ```bash
-# Check for compiler errors and warnings
-cargo check --all-targets
+# Check for compiler errors and warnings (workspace-wide)
+cargo check --workspace --all-targets
 
-# Check for clippy lints (pedantic + nursery are enabled)
-cargo clippy --all-targets -- -D warnings
+# Check for clippy lints (pedantic is enabled)
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Verify formatting
 cargo fmt --check
@@ -154,233 +147,67 @@ If you see errors, **carefully understand and resolve each issue**. Read suffici
 
 ## Testing
 
+### Testing Policy
+
+Every component crate includes inline `#[cfg(test)]` unit tests alongside the implementation. Tests must cover:
+- Happy path
+- Edge cases (empty input, max values, boundary conditions)
+- Error conditions
+
+Cross-component integration tests live in the workspace `tests/` directory.
+
 ### Unit Tests
 
-The test suite includes 80+ tests covering all functionality:
-
 ```bash
-# Run all tests
-cargo test
+# Run all tests across the workspace
+cargo test --workspace
 
 # Run with output
-cargo test -- --nocapture
+cargo test --workspace -- --nocapture
 
-# Run specific test module
-cargo test normalize_command_tests
-cargo test safe_pattern_tests
-cargo test destructive_pattern_tests
+# Run tests for a specific crate
+cargo test -p vc_config
+cargo test -p vc_collect
+cargo test -p vc_store
+cargo test -p vc_query
+cargo test -p vc_oracle
+cargo test -p vc_guardian
+cargo test -p vc_knowledge
+cargo test -p vc_alert
+cargo test -p vc_tui
+cargo test -p vc_web
+cargo test -p vc_cli
+cargo test -p vc_mcp
+
+# Run tests with all features enabled
+cargo test --workspace --all-features
 ```
 
-### End-to-End Testing
+### Integration Tests
 
 ```bash
-# Run the E2E test script
-./scripts/e2e_test.sh
-
-# Or test manually
-echo '{"tool_name":"Bash","tool_input":{"command":"git reset --hard"}}' | cargo run --release
-# Should output JSON denial
-
-echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | cargo run --release
-# Should output nothing (allowed)
+# Run workspace-level integration tests
+cargo test --test config_smoke
+cargo test --test collector_parsing
 ```
 
 ### Test Categories
 
-| Module | Tests | Purpose |
-|--------|-------|---------|
-| `normalize_command_tests` | 8 | Path stripping for git/rm binaries |
-| `quick_reject_tests` | 5 | Fast-path filtering for non-git/rm commands |
-| `safe_pattern_tests` | 16 | Whitelist accuracy |
-| `destructive_pattern_tests` | 20 | Blacklist coverage |
-| `input_parsing_tests` | 8 | JSON parsing robustness |
-| `deny_output_tests` | 2 | Output format validation |
-| `integration_tests` | 4 | End-to-end pipeline |
-| `optimization_tests` | 9 | Performance paths |
-| `edge_case_tests` | 24 | Real-world edge cases |
-
----
-
-## CI/CD Pipeline
-
-### Jobs Overview
-
-| Job | Trigger | Purpose | Blocking |
-|-----|---------|---------|----------|
-| `check` | PR, push | Format, clippy, UBS, tests | Yes |
-| `coverage` | PR, push | Coverage thresholds | Yes |
-| `memory-tests` | PR, push | Memory leak detection | Yes |
-| `benchmarks` | push to master | Performance budgets | Warn only |
-| `e2e` | PR, push | End-to-end shell tests | Yes |
-| `scan-regression` | PR, push | Scan output stability | Yes |
-| `perf-regression` | PR, push | Process-per-invocation perf | Yes |
-
-### Check Job
-
-Runs format, clippy, UBS static analysis, and unit tests. Includes:
-- `cargo fmt --check` - Code formatting
-- `cargo clippy --all-targets -- -D warnings` - Lints (pedantic + nursery enabled)
-- UBS analysis on changed Rust files (warning-only, non-blocking)
-- `cargo nextest run` - Full test suite with JUnit XML report
-
-### Coverage Job
-
-Runs `cargo llvm-cov` and enforces thresholds:
-- **Overall:** ≥ 70%
-- **src/evaluator.rs:** ≥ 80%
-- **src/hook.rs:** ≥ 80%
-
-Coverage is uploaded to Codecov for trend tracking. Dashboard: https://codecov.io/gh/Dicklesworthstone/destructive_command_guard
-
-### Memory Tests Job
-
-Runs dedicated memory leak tests with:
-- `--test-threads=1` for accurate measurements
-- Release mode for realistic performance
-- 1-2MB growth budgets per test
-
-Tests include: hook input parsing, pattern evaluation, heredoc extraction, file extractors, full pipeline, and a self-test that verifies the framework catches leaks.
-
-### Benchmarks Job
-
-Runs on push to master only (benchmarks are noisy on PRs). Checks performance budgets from `src/perf.rs`:
-- Quick reject: < 50μs panic
-- Fast path: < 500μs panic
-- Pattern match: < 1ms panic
-- Heredoc extract: < 2ms panic
-- Full pipeline: < 50ms panic
-
-### UBS Static Analysis
-
-Ultimate Bug Scanner runs on changed Rust files. Currently warning-only (non-blocking) to tune for false positives. Configuration in `.ubsignore` excludes test/bench/fuzz directories.
-
-### Dependabot
-
-Automated dependency updates configured in `.github/dependabot.yml`:
-- **Cargo dependencies:** Weekly (Monday 9am EST), 5 PR limit
-- **GitHub Actions:** Weekly (Monday 9am EST), 3 PR limit
-- **Grouping:** Minor/patch updates grouped; serde updates separate (more careful review)
-
-### Debugging CI Failures
-
-#### Coverage Threshold Failure
-1. Check which file(s) dropped below threshold in CI output
-2. Run `cargo llvm-cov --html` locally to see uncovered lines
-3. Add tests for uncovered code paths
-4. Download `coverage-report` artifact for full details
-
-#### Memory Test Failure
-1. Download `memory-test-output` artifact
-2. Check which test failed and growth amount
-3. Run locally: `cargo test --test memory_tests --release -- --nocapture --test-threads=1`
-4. Profile with valgrind if needed
-
-#### UBS Warnings
-1. Check ubs-output.log in CI summary
-2. Review flagged issues - may be false positives
-3. If valid issues, fix them; if false positives, add to `.ubsignore`
-
-#### E2E Test Failure
-1. Download `e2e-artifacts` artifact
-2. Check `e2e_output.json` for failing test details
-3. Run locally: `./scripts/e2e_test.sh --verbose`
-4. The step summary shows the first failure with output
-
-#### Benchmark Regression
-1. Download `benchmark-results` artifact
-2. Compare against budgets in `src/perf.rs`
-3. Profile locally with `cargo bench --bench heredoc_perf`
-4. Check for algorithmic regressions in hot path
-
----
-
-## Release Process
-
-When fixes are ready for release, follow this process:
-
-### 1. Verify CI Passes Locally
-
-```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --lib
-```
-
-### 2. Commit Changes
-
-```bash
-git add -A
-git commit -m "fix: description of fixes
-
-- List specific fixes
-- Include any breaking changes
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
-```
-
-### 3. Bump Version (if needed)
-
-The version in `Cargo.toml` determines the release tag. If the current version already has a failed release, you can reuse it. Otherwise bump appropriately:
-
-- **Patch** (0.2.10 → 0.2.11): Bug fixes, no new features
-- **Minor** (0.2.x → 0.3.0): New features, backward compatible
-- **Major** (0.x → 1.0): Breaking changes
-
-### 4. Push and Trigger Release
-
-```bash
-git push origin main
-git push origin main:master  # Keep master in sync
-```
-
-The `release-automation.yml` workflow will:
-1. Detect version change in `Cargo.toml`
-2. Create an annotated git tag (e.g., `v0.2.13`)
-3. Push the tag, which triggers `dist.yml`
-
-The `dist.yml` workflow will:
-1. Run tests and clippy
-2. Build binaries for all platforms (Linux x86/ARM, macOS Intel/Apple Silicon, Windows)
-3. Create `.tar.xz` archives with SHA256 checksums
-4. Sign artifacts with Sigstore (cosign) - creates `.sigstore.json` bundles
-5. Upload everything to GitHub Releases
-
-### 5. Verify Release
-
-```bash
-gh release list --limit 5
-gh release view v0.2.13  # Check assets were uploaded
-```
-
-Expected assets per release:
-- `dcg-{target}.tar.xz` - Binary archive
-- `dcg-{target}.tar.xz.sha256` - Checksum
-- `dcg-{target}.tar.xz.sigstore.json` - Sigstore signature bundle
-- `install.sh`, `install.ps1` - Install scripts
-
-### Troubleshooting Failed Releases
-
-If CI fails:
-1. Check workflow run: `gh run list --workflow=dist.yml --limit=5`
-2. View failed job: `gh run view <run-id>`
-3. Fix issues locally, commit, and push again
-4. The same version tag will be updated on successful build
-
-Common failures:
-- **Clippy errors**: Fix lints, ensure `cargo clippy -- -D warnings` passes
-- **Test failures**: Run `cargo test --lib` to reproduce
-- **Format errors**: Run `cargo fmt` to fix
-
----
-
-## Heredoc Detection Notes (for contributors)
-
-- **Rule IDs**: Heredoc patterns use stable IDs like `heredoc.python.shutil_rmtree` for allowlisting.
-- **Fail-open**: In hook mode, heredoc parse errors/timeouts must allow (do not block).
-- **Tests**: Prefer targeted tests in `src/ast_matcher.rs` and `src/heredoc.rs`.
-  - `cargo test ast_matcher`
-  - `cargo test heredoc`
-  - Add positive and negative fixtures for each new pattern.
+| Location | Focus Areas |
+|----------|-------------|
+| `vc_config` | TOML parsing, environment overrides, path expansion, config linting, wizard |
+| `vc_collect` | Collector trait contracts, output parsing, cursor management, SSH command execution |
+| `vc_store` | DuckDB schema migrations, data ingestion, query utilities, audit events |
+| `vc_query` | Health score calculation, guardrails validation, cost estimation, anomaly detection |
+| `vc_oracle` | Rate limit forecasting, agent DNA fingerprinting, evolutionary optimization, experiments |
+| `vc_guardian` | Playbook execution, approval workflows, autopilot mode, rate limiting |
+| `vc_knowledge` | Knowledge entry CRUD, feedback scoring, keyword search |
+| `vc_alert` | Rule evaluation, cooldown tracking, delivery channels |
+| `vc_tui` | Screen rendering, keyboard navigation, theme application |
+| `vc_web` | Axum route handling, WebSocket updates, API response formats |
+| `vc_cli` | Subcommand dispatch, robot mode JSON envelopes, TOON output |
+| `vc_mcp` | MCP tool/resource registration, request/response handling |
+| `tests/` | Cross-component integration, E2E scenarios, collector parsing |
 
 ---
 
@@ -390,334 +217,179 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 ---
 
-## dcg (Destructive Command Guard) — This Project
+## vibe_cockpit (vc) — This Project
 
-**This is the project you're working on.** dcg is a high-performance Claude Code hook that blocks destructive commands before they execute. It protects against dangerous git commands, filesystem operations, database queries, container commands, and more through a modular pack system.
+**This is the project you're working on.** vibe_cockpit is an agent fleet monitoring and orchestration system. It provides a unified TUI dashboard, web dashboard, and robot-mode CLI for monitoring dozens of AI coding agent instances across multiple Linux machines. It collects data from 15+ existing flywheel tools (ntm, caut, cass, ru, br, bv, dcg, rano, process_triage, etc.), stores everything in DuckDB for analytical queries, and provides alerting, prediction, and self-healing capabilities.
+
+### What It Does
+
+Monitors a fleet of 30+ AI coding agent accounts (Claude, GPT, Gemini) across multiple machines. Collects metrics on sessions, tokens, commits, messages, rate limits, system resources, blocked commands, beads progress, and network activity. Surfaces anomalies, forecasts rate limit exhaustion, and can autonomously remediate problems via playbooks.
 
 ### Architecture
 
 ```
-JSON Input → Parse → Quick Reject (memchr) → Normalize → Safe Patterns → Destructive Patterns → Default Allow
+                    ┌─────────────────────────────────┐
+                    │         User Interfaces          │
+                    │  TUI (ratatui)  │  Web (axum)    │
+                    │  CLI (robot)    │  MCP Server     │
+                    └────────┬────────┬────────────────┘
+                             │        │
+                    ┌────────▼────────▼────────────────┐
+                    │          Query Layer              │
+                    │  Health scores, rollups, anomaly  │
+                    │  detection, cost estimation       │
+                    └────────┬─────────────────────────┘
+                             │
+              ┌──────────────▼──────────────┐
+              │         DuckDB Store         │
+              │  Analytical queries, schema  │
+              │  migrations, audit log       │
+              └──────┬───────────────┬──────┘
+                     │               │
+        ┌────────────▼───┐    ┌──────▼──────────┐
+        │   Collectors    │    │   Oracle         │
+        │  SSH → remote   │    │  Rate limit      │
+        │  Local → tools  │    │  forecasting,    │
+        │  Incremental    │    │  agent DNA,      │
+        │  cursors        │    │  experiments     │
+        └────────────────┘    └─────────────────┘
+                                      │
+              ┌───────────────────────▼─────────────┐
+              │  Guardian (Self-Healing)             │
+              │  Playbooks, autopilot, approval      │
+              │  workflows, account switching         │
+              └──────────────┬──────────────────────┘
+                             │
+              ┌──────────────▼──────────────┐
+              │         Alert System         │
+              │  Rules, thresholds, patterns │
+              │  cooldowns, delivery channels│
+              └─────────────────────────────┘
 ```
 
-### Key Files
+### Workspace Structure
 
-| File | Purpose |
+```
+vibe_cockpit/
+├── Cargo.toml                     # Workspace root + vc binary crate
+├── build.rs                       # Build metadata (vergen-gix)
+├── src/
+│   └── main.rs                    # Binary entry point (tokio::main)
+├── crates/
+│   ├── vc_config/                 # TOML config parsing, env overrides, machine inventory, linting
+│   ├── vc_collect/                # Data collectors (SSH, local), cursor management, tool probing
+│   ├── vc_store/                  # DuckDB storage layer, schema migrations, audit events
+│   ├── vc_query/                  # Health scores, guardrails, cost estimation, aggregation
+│   ├── vc_oracle/                 # Prediction engine: rate limits, agent DNA, evolution, experiments
+│   ├── vc_guardian/               # Self-healing: playbooks, autopilot, approval workflows
+│   ├── vc_knowledge/              # Knowledge base: solutions, patterns, prompts, debug logs
+│   ├── vc_alert/                  # Alert rules, condition evaluation, delivery channels
+│   ├── vc_tui/                    # Terminal UI (ratatui): 12 screens, themes, widgets
+│   ├── vc_web/                    # Web server (axum): JSON API, WebSocket, static files
+│   ├── vc_cli/                    # CLI commands (clap): subcommands, robot mode, TOON output
+│   └── vc_mcp/                    # MCP server: tools and resources for agent consumers
+├── tests/                         # Workspace-level integration tests
+│   ├── config_smoke.rs            # Config loading smoke test
+│   ├── collector_parsing.rs       # Collector output parsing tests
+│   ├── common/                    # Shared test utilities
+│   └── e2e/                       # End-to-end test scenarios
+└── docs/
+    └── schemas/                   # JSON schema definitions
+```
+
+### Key Files by Crate
+
+| Crate | Key Files | Purpose |
+|-------|-----------|---------|
+| `vc_config` | `src/lib.rs` | `VcConfig`, `MachineConfig`, `WebConfig`, config linting, wizard |
+| `vc_collect` | `src/lib.rs`, `src/collectors/`, `src/ssh.rs`, `src/remote.rs` | `Collector` trait, SSH runner, `MultiMachineCollector`, tool probing |
+| `vc_store` | `src/lib.rs`, `src/migrations.rs`, `src/schema.rs` | `VcStore`, DuckDB connection, migrations, audit events |
+| `vc_query` | `src/lib.rs`, `src/guardrails.rs`, `src/cost.rs` | `QueryBuilder`, `HealthScore`, `FleetOverview`, cost estimation, guardrails |
+| `vc_oracle` | `src/lib.rs`, `src/rate_limit.rs`, `src/dna.rs`, `src/evolution.rs`, `src/experiment.rs` | `RateLimitForecaster`, `AgentDna`, `EvolutionManager`, `ExperimentManager` |
+| `vc_guardian` | `src/lib.rs`, `src/autopilot.rs` | `Playbook`, `PlaybookTrigger`, `PlaybookStep`, autopilot loop |
+| `vc_knowledge` | `src/lib.rs` | `KnowledgeBase`, `EntryType` (solution, pattern, prompt, debug_log), feedback |
+| `vc_alert` | `src/lib.rs` | `AlertRule`, `AlertCondition`, `Severity`, cooldown, delivery channels |
+| `vc_tui` | `src/lib.rs`, `src/screens/`, `src/theme.rs`, `src/widgets.rs` | 12 `Screen` variants, `render_*` functions, `Theme` |
+| `vc_web` | `src/lib.rs` | Axum `Router`, JSON API, WebSocket, CORS, static file serving |
+| `vc_cli` | `src/lib.rs`, `src/robot.rs`, `src/schema_registry.rs` | `Cli` (clap), `RobotEnvelope`, `SchemaRegistry`, `OutputFormat` |
+| `vc_mcp` | `src/lib.rs` | `McpServer`, `McpTool`, `McpResource` |
+
+### Data Sources (Collectors)
+
+vibe_cockpit polls these tools on local and remote machines:
+
+| Tool | Data Collected |
+|------|---------------|
+| `ntm` | Agent session orchestration, task assignments |
+| `caut` (coding_agent_usage_tracker) | Account usage, remaining credit, reset dates |
+| `cass` (coding_agent_session_search) | Session metadata, token counts, durations, compactions |
+| `ru` (repo_updater) | Git commits, dirty repos, uncommitted code (LoC/tokens), issues, PRs |
+| `br` (beads_rust) | Task status, priority, dependencies, completion rates |
+| `bv` (beads_viewer) | Triage metrics, PageRank, critical path, velocity |
+| `dcg` (destructive_command_guard) | Blocked commands by type, machine, repo |
+| `rano` | Network activity, bandwidth, request counts per agent |
+| `process_triage` | Zombie/runaway processes, system performance |
+| `rch` (remote_compilation_helper) | Remote build counts, worker utilization |
+| `mcp_agent_mail` | Agent messages, thread counts, reservation conflicts |
+| `cloud_benchmarker` | VPS instance benchmarks, monitoring data |
+
+### TUI Screens
+
+| Screen | Key Binding | Shows |
+|--------|-------------|-------|
+| Overview | `1` | Fleet health summary, top alerts, active agents |
+| Machines | `2` | Per-machine status (CPU, memory, disk, load) |
+| Repos | `3` | Repository activity, commits, dirty state |
+| Accounts | `4` | Provider accounts, usage percentages, reset dates |
+| Sessions | `5` | Active agent sessions, tokens, durations |
+| Mail | `6` | Agent-to-agent messages, thread activity |
+| Alerts | `7` | Active/resolved alerts, severity breakdown |
+| Guardian | `8` | Playbook runs, autopilot status, actions taken |
+| Oracle | `9` | Predictions, rate limit forecasts, agent DNA |
+| Events | `0` | Audit log, recent collector runs |
+| Beads | `b` | Task progress, velocity, completion rates |
+| Settings | `s` | Configuration display |
+
+### Robot Mode
+
+The CLI provides agent-optimized output via `vc robot <subcommand>`:
+
+- Output formats: JSON (default), TOON (token-optimized), Text
+- All output wrapped in `RobotEnvelope` with metadata (timestamp, version, format)
+- Subcommands mirror TUI screens: `status`, `health`, `triage`, `accounts`, etc.
+
+### Core Types Quick Reference
+
+| Type | Purpose |
 |------|---------|
-| `src/main.rs` | Complete implementation (~40KB) + 80 tests |
-| `Cargo.toml` | Dependencies and release optimizations |
-| `build.rs` | Build script for version metadata (vergen) |
-| `rust-toolchain.toml` | Nightly toolchain requirement |
-| `scripts/e2e_test.sh` | End-to-end test script (120 tests) |
-
-### Pattern System
-
-- **34 safe patterns** (whitelist, checked first)
-- **16 destructive patterns** (blacklist, checked second)
-- **Default allow** for unmatched commands
-
-### Adding New Patterns
-
-1. Identify the command to block/allow
-2. Write a regex using `fancy-regex` syntax (supports lookahead/lookbehind)
-3. Add to `SAFE_PATTERNS` or `DESTRUCTIVE_PATTERNS` using the macros:
-
-```rust
-// Safe pattern (whitelist)
-pattern!("pattern-name", r"regex-here")
-
-// Destructive pattern (blacklist)
-destructive!(
-    r"regex-here",
-    "Human-readable reason for blocking"
-)
-```
-
-4. Add tests for all variants
-5. Run `cargo test` and `./scripts/e2e_test.sh`
-
-### Performance Requirements
-
-Every Bash command passes through this hook. Performance is critical:
-
-- Quick rejection filter eliminates 99%+ of commands before regex
-- Lazy-initialized static regex patterns (compiled once, reused)
-- Sub-millisecond execution for typical commands
-- Zero allocations on the hot path for safe commands
-
----
-
-<!-- dcg-machine-readable-v1 -->
-
-## DCG Hook Protocol (Machine-Readable Reference)
-
-> This section provides structured documentation for AI agents integrating with dcg.
-
-### JSON Input Format
-
-dcg reads from stdin in Claude Code's `PreToolUse` hook format:
-
-```json
-{
-  "tool_name": "Bash",
-  "tool_input": {
-    "command": "git reset --hard HEAD~5"
-  }
-}
-```
-
-**Required fields:**
-- `tool_name`: Must be `"Bash"` for dcg to process (other tools are ignored)
-- `tool_input.command`: The shell command string to evaluate
-
-### JSON Output Format (Denial)
-
-When a command is blocked, dcg outputs JSON to stdout:
-
-```json
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "deny",
-    "permissionDecisionReason": "BLOCKED by dcg\n\nTip: dcg explain \"git reset --hard HEAD~5\"\n\nReason: git reset --hard destroys uncommitted changes\n\nExplanation: Rewrites history and discards uncommitted changes.\n\nRule: core.git:reset-hard\n\nCommand: git reset --hard HEAD~5\n\nIf this operation is truly needed, ask the user for explicit permission and have them run the command manually.",
-    "ruleId": "core.git:reset-hard",
-    "packId": "core.git",
-    "severity": "critical",
-    "confidence": 0.95,
-    "allowOnceCode": "a1b2c3",
-    "allowOnceFullHash": "sha256:abc123...",
-    "remediation": {
-      "safeAlternative": "git stash",
-      "explanation": "Use git stash to save your changes first.",
-      "allowOnceCommand": "dcg allow-once a1b2c3"
-    }
-  }
-}
-```
-
-**Key fields for agent parsing:**
-| Field | Type | Description |
-|-------|------|-------------|
-| `permissionDecision` | `"allow"` \| `"deny"` | The decision |
-| `ruleId` | `string` | Stable pattern ID (e.g., `"core.git:reset-hard"`) for allowlisting |
-| `packId` | `string` | Pack that matched (e.g., `"core.git"`) |
-| `severity` | `string` | `"critical"`, `"high"`, `"medium"`, or `"low"` |
-| `confidence` | `number` | Match confidence 0.0-1.0 |
-| `allowOnceCode` | `string` | Short code for `dcg allow-once` |
-| `remediation.safeAlternative` | `string?` | Suggested safe command |
-
-### JSON Output Format (Allow)
-
-When a command is allowed: **no output** (silent exit 0).
-
----
-
-## Exit Codes Reference
-
-| Code | Meaning | Agent Action |
-|------|---------|--------------|
-| `0` | Command allowed OR denied (check stdout for JSON) | Parse stdout; if empty, command was allowed |
-| `1` | Parse error or invalid input | Retry with corrected input |
-| `2` | Configuration error | Check config file syntax |
-
-**Detection logic for agents:**
-```bash
-output=$(echo "$hook_input" | dcg 2>/dev/null)
-if [ -z "$output" ]; then
-  echo "ALLOWED"
-else
-  echo "DENIED: $output"
-fi
-```
-
----
-
-## Error Codes Reference
-
-DCG uses standardized error codes in the format `DCG-XXXX` for machine-parseable error handling.
-
-### Error Categories
-
-| Range | Category | Description |
-|-------|----------|-------------|
-| DCG-1xxx | `pattern_match` | Pattern matching and evaluation errors |
-| DCG-2xxx | `configuration` | Configuration loading and parsing errors |
-| DCG-3xxx | `runtime` | Runtime and execution errors |
-| DCG-4xxx | `external` | External integration errors |
-
-### Common Error Codes
-
-| Code | Description | Typical Cause |
-|------|-------------|---------------|
-| `DCG-1001` | Pattern compilation failed | Invalid regex syntax in pattern |
-| `DCG-1002` | Pattern match timeout | Complex pattern taking too long |
-| `DCG-2001` | Config file not found | Missing configuration file |
-| `DCG-2002` | Config parse error | Invalid TOML/JSON syntax |
-| `DCG-2004` | Allowlist load error | Invalid allowlist file |
-| `DCG-3001` | JSON parse error | Malformed JSON input |
-| `DCG-3002` | IO error | File read/write failure |
-| `DCG-4001` | External pack load failed | Invalid external pack YAML |
-
-### Error JSON Structure
-
-When errors are returned in JSON format, they follow this structure:
-
-```json
-{
-  "error": {
-    "code": "DCG-3001",
-    "category": "runtime",
-    "message": "JSON parse error: unexpected token at position 15",
-    "context": {
-      "position": 15,
-      "input_preview": "{ \"tool_name\": ..."
-    }
-  }
-}
-```
-
-**Fields:**
-- `code`: Stable error code for programmatic handling
-- `category`: Error category (`pattern_match`, `configuration`, `runtime`, `external`)
-- `message`: Human-readable error description
-- `context`: Additional details (optional, varies by error type)
-
----
-
-## Allowlist & Bypass Instructions
-
-### Temporary Bypass (24-hour allow-once)
-
-When a command is blocked, the output includes an `allowOnceCode`. Use it:
-
-```bash
-dcg allow-once <code>
-```
-
-This allows the specific command for 24 hours in the current directory scope.
-
-### Permanent Allowlist (by rule ID)
-
-Add a rule to the project allowlist:
-
-```bash
-dcg allowlist add <ruleId> --project
-# Example: dcg allowlist add core.git:reset-hard --project
-```
-
-Allowlist files (in priority order):
-1. `.dcg/allowlist.toml` (project)
-2. `~/.config/dcg/allowlist.toml` (user)
-3. `/etc/dcg/allowlist.toml` (system)
-
-### Bypass Environment Variable
-
-For emergency bypass (use sparingly):
-
-```bash
-DCG_BYPASS=1 <command>
-```
-
-**Warning:** This disables all protection. Log and justify any usage.
-
----
-
-## Pattern Quick Reference
-
-### Core Git Patterns (Always Enabled)
-
-| Pattern ID | Blocks | Severity |
-|------------|--------|----------|
-| `core.git:reset-hard` | `git reset --hard` | Critical |
-| `core.git:reset-merge` | `git reset --merge` | High |
-| `core.git:checkout-discard` | `git checkout -- <file>` | High |
-| `core.git:restore-discard` | `git restore <file>` (without `--staged`) | High |
-| `core.git:clean-force` | `git clean -f`, `git clean -fd` | High |
-| `core.git:force-push` | `git push --force`, `git push -f` | High |
-| `core.git:branch-force-delete` | `git branch -D` | High |
-| `core.git:stash-drop` | `git stash drop`, `git stash clear` | High |
-
-### Core Filesystem Patterns (Always Enabled)
-
-| Pattern ID | Blocks | Severity |
-|------------|--------|----------|
-| `core.filesystem:rm-rf-root` | `rm -rf /`, `rm -rf ~` | Critical |
-| `core.filesystem:rm-rf-general` | `rm -rf` outside temp dirs | High |
-
-### Safe Patterns (Whitelist - Always Allowed)
-
-| Pattern | Command | Why Safe |
-|---------|---------|----------|
-| `git-checkout-branch` | `git checkout -b <branch>` | Creates new branch |
-| `git-checkout-orphan` | `git checkout --orphan <branch>` | Creates orphan branch |
-| `git-restore-staged` | `git restore --staged <file>` | Only unstages, doesn't discard |
-| `git-clean-dry-run` | `git clean -n`, `git clean --dry-run` | Preview only |
-| `rm-tmp` | `rm -rf /tmp/*`, `/var/tmp/*` | Temp directory cleanup |
-
-### Pack Enable/Disable Examples
-
-```toml
-# ~/.config/dcg/config.toml
-[packs]
-enabled = [
-    "database.postgresql",    # Blocks DROP TABLE, TRUNCATE
-    "kubernetes.kubectl",     # Blocks kubectl delete namespace
-    "cloud.aws",              # Blocks aws ec2 terminate-instances
-]
-
-disabled = [
-    "containers.docker",      # Disable Docker protection
-]
-```
-
-List all packs: `dcg packs --verbose`
-
----
-
-## CLI Quick Reference for Agents
-
-| Command | Purpose |
-|---------|---------|
-| `dcg explain "<command>"` | Detailed trace of why command is blocked/allowed |
-| `dcg allow-once <code>` | Allow a blocked command for 24 hours |
-| `dcg allowlist add <ruleId> --project` | Permanently allow a rule |
-| `dcg packs` | List enabled packs |
-| `dcg packs --verbose` | List all packs with pattern counts |
-| `dcg scan .` | Scan codebase for destructive patterns |
-| `dcg --version` | Show version and build info |
-
----
-
-## Agent Integration Checklist
-
-When integrating with dcg, ensure your agent:
-
-- [ ] Parses stdout for JSON denial responses
-- [ ] Handles empty stdout as "command allowed"
-- [ ] Uses `ruleId` for stable allowlisting (not pattern text)
-- [ ] Displays `remediation.safeAlternative` to users when available
-- [ ] Respects `severity` for prioritization (critical > high > medium > low)
-- [ ] Uses `dcg explain` before asking users to bypass
-
----
-
-## JSON Schema Reference
-
-Formal JSON Schema definitions (Draft 2020-12) for all dcg output formats are available in `docs/json-schema/`:
-
-| Schema | Purpose |
-|--------|---------|
-| [`hook-output.json`](docs/json-schema/hook-output.json) | PreToolUse hook denial response format |
-| [`scan-results.json`](docs/json-schema/scan-results.json) | `dcg scan` command output format |
-| [`stats-output.json`](docs/json-schema/stats-output.json) | `dcg stats` command output format |
-| [`error.json`](docs/json-schema/error.json) | Error response formats for various commands |
-
-Use these schemas for:
-- Validating dcg output in automated pipelines
-- Generating type-safe client code
-- Understanding the complete output contract
-
-<!-- end-dcg-machine-readable -->
+| `VcConfig` | Root configuration (machines, collectors, alerts, web server settings) |
+| `VcStore` | DuckDB connection wrapper with migrations and query helpers |
+| `Collector` | Async trait for data source implementations |
+| `Cursor` | Incremental collection state (timestamp, offset, hash) |
+| `HealthScore` | Per-machine health with weighted factors |
+| `FleetOverview` | Aggregated fleet metrics for dashboard |
+| `QueryBuilder` | Safe query construction with guardrails |
+| `RateLimitForecaster` | Predicts account rate limit exhaustion |
+| `AgentDna` | Behavioral fingerprint for anomaly detection |
+| `Playbook` | Automated remediation workflow definition |
+| `AlertRule` | Condition-based alert with cooldowns and channels |
+| `McpServer` | MCP protocol server for agent tool/resource access |
+| `RobotEnvelope` | Standardized JSON wrapper for robot-mode output |
+| `Screen` | TUI screen enum (12 variants) |
+
+### Key Design Decisions
+
+- **DuckDB over SQLite** — analytical workloads (aggregations, time-series rollups) are the primary query pattern; DuckDB excels here
+- **Tokio async runtime** — standard ecosystem; axum, russh, reqwest all use tokio natively
+- **SSH-based remote collection** — no agent installation required on remote machines; collectors run commands over SSH
+- **Incremental collection with cursors** — avoids rescanning entire histories every poll cycle
+- **Fail-soft collectors** — a broken collector shows "stale" data, never crashes the system
+- **Timeout-bounded collection** — no collector can hang the system
+- **Idempotent inserts** — same source payload never creates duplicates
+- **Versioned collector output** — every collector has `schema_version` for forward evolution
+- **Robot mode for agents** — the same data accessible to humans via TUI is available to agents via JSON CLI
+- **Structured tracing** — all operations emit tracing spans for diagnostics
+- **Audit log** — every collector run, autopilot action, and user command is recorded
 
 ---
 
@@ -928,21 +600,21 @@ ubs .                                   # Whole project (ignores target/, Cargo.
 ### Output Format
 
 ```
-⚠️  Category (N errors)
-    file.rs:42:5 – Issue description
-    💡 Suggested fix
+  Category (N errors)
+    file.rs:42:5 - Issue description
+    Suggested fix
 Exit code: 1
 ```
 
-Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fail
+Parse: `file:line:col` -> location | Suggested fix -> how to fix | Exit 0/1 -> pass/fail
 
 ### Fix Workflow
 
-1. Read finding → category + fix suggestion
-2. Navigate `file:line:col` → view context
+1. Read finding -> category + fix suggestion
+2. Navigate `file:line:col` -> view context
 3. Verify real issue (not false positive)
 4. Fix root cause (not symptom)
-5. Re-run `ubs <file>` → exit 0
+5. Re-run `ubs <file>` -> exit 0
 6. Commit
 
 ### Bug Severity
@@ -950,6 +622,33 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 - **Critical (always fix):** Memory safety, use-after-free, data races, SQL injection
 - **Important (production):** Unwrap panics, resource leaks, overflow checks
 - **Contextual (judgment):** TODO/FIXME, println! debugging
+
+---
+
+## RCH — Remote Compilation Helper
+
+RCH offloads `cargo build`, `cargo test`, `cargo clippy`, and other compilation commands to a fleet of 8 remote Contabo VPS workers instead of building locally. This prevents compilation storms from overwhelming csd when many agents run simultaneously.
+
+**RCH is installed at `~/.local/bin/rch` and is hooked into Claude Code's PreToolUse automatically.** Most of the time you don't need to do anything if you are Claude Code — builds are intercepted and offloaded transparently.
+
+To manually offload a build:
+```bash
+rch exec -- cargo build --release
+rch exec -- cargo test
+rch exec -- cargo clippy
+```
+
+Quick commands:
+```bash
+rch doctor                    # Health check
+rch workers probe --all       # Test connectivity to all 8 workers
+rch status                    # Overview of current state
+rch queue                     # See active/waiting builds
+```
+
+If rch or its workers are unavailable, it fails open — builds run locally as normal.
+
+**Note for Codex/GPT-5.2:** Codex does not have the automatic PreToolUse hook, but you can (and should) still manually offload compute-intensive compilation commands using `rch exec -- <command>`. This avoids local resource contention when multiple agents are building simultaneously.
 
 ---
 
@@ -968,8 +667,8 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 
 ### Rule of Thumb
 
-- Need correctness or **applying changes** → `ast-grep`
-- Need raw speed or **hunting text** → `rg`
+- Need correctness or **applying changes** -> `ast-grep`
+- Need raw speed or **hunting text** -> `rg`
 - Often combine: `rg` to shortlist files, then `ast-grep` to match/modify
 
 ### Rust Examples
@@ -1002,9 +701,9 @@ rg -l -t rust 'unwrap\(' | xargs ast-grep run -l Rust -p '$X.unwrap()' --json
 
 | Scenario | Tool | Why |
 |----------|------|-----|
-| "How is pattern matching implemented?" | `warp_grep` | Exploratory; don't know where to start |
-| "Where is the quick reject filter?" | `warp_grep` | Need to understand architecture |
-| "Find all uses of `Regex::new`" | `ripgrep` | Targeted literal search |
+| "How does the collector system work?" | `warp_grep` | Exploratory; don't know where to start |
+| "Where is the rate limit forecaster?" | `warp_grep` | Need to understand architecture |
+| "Find all uses of `VcStore::new`" | `ripgrep` | Targeted literal search |
 | "Find files with `println!`" | `ripgrep` | Simple pattern |
 | "Replace all `unwrap()` with `expect()`" | `ast-grep` | Structural refactor |
 
@@ -1012,8 +711,8 @@ rg -l -t rust 'unwrap\(' | xargs ast-grep run -l Rust -p '$X.unwrap()' --json
 
 ```
 mcp__morph-mcp__warp_grep(
-  repoPath: "/path/to/dcg",
-  query: "How does the safe pattern whitelist work?"
+  repoPath: "/dp/vibe_cockpit",
+  query: "How does the SSH-based remote collection work?"
 )
 ```
 
@@ -1021,9 +720,9 @@ Returns structured results with file paths, line ranges, and extracted code snip
 
 ### Anti-Patterns
 
-- **Don't** use `warp_grep` to find a specific function name → use `ripgrep`
-- **Don't** use `ripgrep` to understand "how does X work" → wastes time with manual reads
-- **Don't** use `ripgrep` for codemods → risks collateral edits
+- **Don't** use `warp_grep` to find a specific function name -> use `ripgrep`
+- **Don't** use `ripgrep` to understand "how does X work" -> wastes time with manual reads
+- **Don't** use `ripgrep` for codemods -> risks collateral edits
 
 <!-- bv-agent-instructions-v1 -->
 
@@ -1083,7 +782,7 @@ git push                # Push to remote
 ### Best Practices
 
 - Check `br ready` at session start to find available work
-- Update status as you work (in_progress → closed)
+- Update status as you work (in_progress -> closed)
 - Create new issues with `br create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type
 - Always `br sync --flush-only && git add .beads/` before ending session
@@ -1092,32 +791,15 @@ git push                # Push to remote
 
 ## Landing the Plane (Session Completion)
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+**When ending a work session**, you MUST complete ALL steps below.
 
 **MANDATORY WORKFLOW:**
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   br sync --flush-only    # Export beads to JSONL (no git ops)
-   git add .beads/         # Stage beads changes
-   git add <other files>   # Stage code changes
-   git commit -m "..."     # Commit everything
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+4. **Sync beads** - `br sync --flush-only` to export to JSONL
+5. **Hand off** - Provide context for next session
 
 
 ---
@@ -1135,10 +817,10 @@ Next steps (pick one)
 
 1. Decide how to handle the unrelated modified files above so we can resume cleanly.
 2. Triage beads_rust-orko (clippy/cargo warnings) and beads_rust-ydqr (rustfmt failures).
-3. If you want a full suite run later, fix conformance/clippy blockers and re‑run cargo test --all.
+3. If you want a full suite run later, fix conformance/clippy blockers and re-run cargo test --all.
 ```
 
-NEVER EVER DO THAT AGAIN. The answer is literally ALWAYS the same: those are changes created by the potentially dozen of other agents working on the project at the same time. This is not only a common occurence, it happens multiple times PER MINUTE. The way to deal with it is simple: you NEVER, under ANY CIRCUMSTANCE, stash, revert, overwrite, or otherwise disturb in ANY way the work of other agents. Just treat those changes identically to changes that you yourself made. Just fool yourself into thinking YOU made the changes and simply don't recall it for some reason.
+NEVER EVER DO THAT AGAIN. The answer is literally ALWAYS the same: those are changes created by the potentially dozen of other agents working on the project at the same time. This is not only a common occurrence, it happens multiple times PER MINUTE. The way to deal with it is simple: you NEVER, under ANY CIRCUMSTANCE, stash, revert, overwrite, or otherwise disturb in ANY way the work of other agents. Just treat those changes identically to changes that you yourself made. Just fool yourself into thinking YOU made the changes and simply don't recall it for some reason.
 
 ---
 
