@@ -6,7 +6,9 @@
 //! - Fleet orchestration commands
 //! - Approval workflow
 //! - Autopilot mode for autonomous fleet management
+//! - Automatic playbook generation from resolution patterns
 
+pub mod autogen;
 pub mod autopilot;
 
 use chrono::{DateTime, Utc};

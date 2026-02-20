@@ -25,8 +25,11 @@ use thiserror::Error;
 pub mod collectors;
 pub mod executor;
 pub mod machine;
+pub mod node;
 pub mod probe;
+pub mod redact;
 pub mod remote;
+pub mod scheduler;
 pub mod ssh;
 
 pub use machine::{Machine, MachineFilter, MachineRegistry, MachineStatus, ToolInfo};

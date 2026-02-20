@@ -5,6 +5,9 @@
 //! - Feedback tracking for usefulness scoring
 //! - Search capabilities (keyword-based)
 //! - Integration with agent sessions
+//! - Solution mining pipeline for extracting knowledge from sessions
+
+pub mod mining;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -15,6 +15,11 @@ pub mod guardrails;
 pub use guardrails::{GuardrailConfig, QueryTemplate, QueryValidator, ValidationError};
 
 pub mod cost;
+
+pub mod digest;
+
+pub mod nl;
+pub use nl::{NlEngine, NlQueryResult, QueryIntent};
 pub use cost::{
     AnomalySeverity, AnomalyType, ConfidenceFactors, CostAnomaly, CostAttribution, CostDriver,
     CostQueryBuilder, CostSummary, CostTrend, MachineCost, ProviderCost, ProviderPricing, RepoCost,

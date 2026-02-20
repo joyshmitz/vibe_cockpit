@@ -5,6 +5,9 @@
 //! - Condition evaluation
 //! - Alert history management
 //! - Delivery channels (TUI, webhook, desktop)
+//! - Alert routing, escalation, and suppression
+
+pub mod routing;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
