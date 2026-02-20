@@ -39,7 +39,7 @@
 //! ```
 
 use chrono::{DateTime, Duration, Utc};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -671,8 +671,8 @@ impl ExperimentManager {
             ));
         }
 
-        let mut rng = rand::thread_rng();
-        let roll: f64 = rng.r#gen::<f64>() * total_weight;
+        let mut rng = rand::rng();
+        let roll: f64 = rng.random::<f64>() * total_weight;
 
         let mut cumulative = 0.0;
         for variant in variants {

@@ -41,7 +41,7 @@
 //! }).await?;
 //! ```
 
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -134,7 +134,7 @@ impl Gene {
 
     /// Mutate the gene with given probability
     pub fn mutate(&mut self, mutation_rate: f64, rng: &mut impl Rng) {
-        if rng.r#gen::<f64>() > mutation_rate {
+        if rng.random::<f64>() > mutation_rate {
             return;
         }
 
@@ -142,12 +142,12 @@ impl Gene {
             Gene::Float { value, min, max } => {
                 // Gaussian mutation
                 let range = *max - *min;
-                let mutation = rng.r#gen::<f64>() * range * 0.1 - range * 0.05;
+                let mutation = rng.random::<f64>() * range * 0.1 - range * 0.05;
                 *value = (*value + mutation).clamp(*min, *max);
             }
             Gene::Int { value, min, max } => {
                 // Random walk mutation
-                let delta = if rng.r#gen_bool(0.5) { 1 } else { -1 };
+                let delta = if rng.random_bool(0.5) { 1 } else { -1 };
                 let range = (*max - *min).max(1);
                 let step = (range / 10).max(1);
                 *value = (*value + delta * step).clamp(*min, *max);
@@ -159,7 +159,7 @@ impl Gene {
             Gene::Choice { value, options } => {
                 // Random choice mutation
                 if !options.is_empty() {
-                    *value = rng.gen_range(0..options.len());
+                    *value = rng.random_range(0..options.len());
                 }
             }
         }
@@ -167,7 +167,7 @@ impl Gene {
 
     /// Perform crossover with another gene
     pub fn crossover(&self, other: &Gene, rng: &mut impl Rng) -> Gene {
-        if rng.r#gen_bool(0.5) {
+        if rng.random_bool(0.5) {
             self.clone()
         } else {
             match (self, other) {
@@ -180,7 +180,7 @@ impl Gene {
                     Gene::Float { value: v2, .. },
                 ) => {
                     // Blend crossover for floats
-                    let alpha = rng.r#gen::<f64>();
+                    let alpha = rng.random::<f64>();
                     let new_value = alpha * v1 + (1.0 - alpha) * v2;
                     Gene::Float {
                         value: new_value.clamp(*min, *max),
@@ -271,11 +271,13 @@ impl GenomeTemplate {
 
         for (name, template) in &self.genes {
             let gene = match template {
-                Gene::Float { min, max, .. } => Gene::float(rng.gen_range(*min..*max), *min, *max),
-                Gene::Int { min, max, .. } => Gene::int(rng.gen_range(*min..*max), *min, *max),
-                Gene::Bool { .. } => Gene::bool(rng.r#gen_bool(0.5)),
+                Gene::Float { min, max, .. } => {
+                    Gene::float(rng.random_range(*min..*max), *min, *max)
+                }
+                Gene::Int { min, max, .. } => Gene::int(rng.random_range(*min..*max), *min, *max),
+                Gene::Bool { .. } => Gene::bool(rng.random_bool(0.5)),
                 Gene::Choice { options, .. } => {
-                    Gene::choice(rng.gen_range(0..options.len()), options.clone())
+                    Gene::choice(rng.random_range(0..options.len()), options.clone())
                 }
             };
             genes.insert(name.clone(), gene);
@@ -528,7 +530,7 @@ impl EvolutionManager {
             best_fitness: f64::NEG_INFINITY,
             stagnation_counter: 0,
             total_evaluations: 0,
-            rng: StdRng::from_entropy(),
+            rng: StdRng::from_rng(&mut rand::rng()),
         }
     }
 
@@ -607,7 +609,7 @@ impl EvolutionManager {
         let mut best: Option<&Individual> = None;
 
         for _ in 0..self.config.tournament_size {
-            let idx = self.rng.gen_range(0..self.population.len());
+            let idx = self.rng.random_range(0..self.population.len());
             let candidate = &self.population[idx];
 
             if best.map_or(true, |b| {
@@ -684,7 +686,7 @@ impl EvolutionManager {
             let parent1 = self.tournament_select();
             let parent2 = self.tournament_select();
 
-            let mut child_genome = if self.rng.r#gen::<f64>() < self.config.crossover_rate {
+            let mut child_genome = if self.rng.random::<f64>() < self.config.crossover_rate {
                 parent1.genome.crossover(&parent2.genome, &mut self.rng)
             } else {
                 parent1.genome.clone()

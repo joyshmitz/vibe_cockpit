@@ -24,22 +24,22 @@ repository = "https://github.com/Dicklesworthstone/vibe_cockpit"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.44", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 
 # Database
-duckdb = { version = "1.1", features = ["bundled"] }
+duckdb = { version = "1.4", features = ["bundled"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "1.0"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 
 # TUI
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 
 # Web
 axum = "0.8"
@@ -58,23 +58,23 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Testing
-proptest = "1.9.0"
+proptest = "1.10"
 mockall = "0.14.0"
 
 # Other utilities
-uuid = { version = "1.11", features = ["v4", "serde"] }
-regex = "1.11"
+uuid = { version = "1.21", features = ["v4", "serde"] }
+regex = "1.12"
 async-trait = "0.1"
 dashmap = "6.1"
 futures = "0.3"
-rand = "0.8"
+rand = "0.10"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 
 # SSH
-russh = "0.45"
-russh-keys = "0.45"
+russh = "0.49"
+russh-keys = "0.49"
 
 # Internal crates
 vc_config = { path = "crates/vc_config" }

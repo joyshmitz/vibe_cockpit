@@ -115,7 +115,7 @@ impl client::Handler for SshHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh_keys::key::PublicKey,
+        _server_public_key: &russh_keys::PublicKey,
     ) -> Result<bool, Self::Error> {
         // Accept all server keys (equivalent to StrictHostKeyChecking=accept-new)
         // In production, you'd want to implement proper host key verification
@@ -358,8 +358,13 @@ impl SshRunner {
         let secret_key = russh_keys::load_secret_key(&key_path, None)
             .map_err(|e| SshError::KeyError(format!("Failed to load key {}: {}", key_path, e)))?;
 
+        let key_with_alg = russh_keys::key::PrivateKeyWithHashAlg::new(Arc::new(secret_key), None)
+            .map_err(|e| {
+                SshError::KeyError(format!("Failed to prepare key {}: {}", key_path, e))
+            })?;
+
         handle
-            .authenticate_publickey(user, Arc::new(secret_key))
+            .authenticate_publickey(user, key_with_alg)
             .await
             .map_err(|_e| SshError::AuthFailed {
                 user: user.to_string(),
