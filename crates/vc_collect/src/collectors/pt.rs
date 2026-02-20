@@ -134,6 +134,7 @@ pub struct PtCollector {
 
 impl PtCollector {
     /// Create a new collector with default 1-hour lookback
+    #[must_use]
     pub fn new() -> Self {
         Self {
             lookback_window: "1h".to_string(),
@@ -141,6 +142,7 @@ impl PtCollector {
     }
 
     /// Create a collector with a custom lookback window
+    #[must_use]
     pub fn with_window(window: impl Into<String>) -> Self {
         Self {
             lookback_window: window.into(),
@@ -148,9 +150,10 @@ impl PtCollector {
     }
 
     /// Categorize a process based on its name and command line
+    #[must_use]
     pub fn categorize_process(name: &str, cmdline: Option<&str>) -> &'static str {
         let name_lower = name.to_lowercase();
-        let cmdline_lower = cmdline.map(|c| c.to_lowercase()).unwrap_or_default();
+        let cmdline_lower = cmdline.map(str::to_lowercase).unwrap_or_default();
 
         // Check for AI agent processes
         if name_lower.contains("claude")
@@ -220,6 +223,7 @@ impl Collector for PtCollector {
         true
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
@@ -246,9 +250,9 @@ impl Collector for PtCollector {
         let output = match ctx.executor.run_timeout(&cmd, ctx.timeout).await {
             Ok(out) => out,
             Err(e) => {
-                warnings.push(Warning::warn(format!("pt list failed: {}", e)));
+                warnings.push(Warning::warn(format!("pt list failed: {e}")));
                 return Ok(CollectResult::empty()
-                    .with_warning(Warning::warn(format!("pt list failed: {}", e)))
+                    .with_warning(Warning::warn(format!("pt list failed: {e}")))
                     .with_duration(start.elapsed()));
             }
         };
@@ -257,9 +261,9 @@ impl Collector for PtCollector {
         let pt_output: PtOutput = match serde_json::from_str(&output) {
             Ok(o) => o,
             Err(e) => {
-                warnings.push(Warning::warn(format!("Failed to parse pt output: {}", e)));
+                warnings.push(Warning::warn(format!("Failed to parse pt output: {e}")));
                 return Ok(CollectResult::empty()
-                    .with_warning(Warning::warn(format!("Failed to parse pt output: {}", e)))
+                    .with_warning(Warning::warn(format!("Failed to parse pt output: {e}")))
                     .with_duration(start.elapsed()));
             }
         };
@@ -271,12 +275,12 @@ impl Collector for PtCollector {
         // Process active processes
         for proc in &pt_output.processes {
             // Track max timestamp for cursor
-            if let Some(ts_str) = &proc.started_at {
-                if let Ok(ts) = DateTime::parse_from_rfc3339(ts_str) {
-                    let ts_utc = ts.with_timezone(&Utc);
-                    if max_ts.is_none() || Some(ts_utc) > max_ts {
-                        max_ts = Some(ts_utc);
-                    }
+            if let Some(ts_str) = &proc.started_at
+                && let Ok(ts) = DateTime::parse_from_rfc3339(ts_str)
+            {
+                let ts_utc = ts.with_timezone(&Utc);
+                if max_ts.is_none() || Some(ts_utc) > max_ts {
+                    max_ts = Some(ts_utc);
                 }
             }
 
@@ -328,12 +332,12 @@ impl Collector for PtCollector {
 
         // Process ended processes (update existing records)
         for ended in &pt_output.ended {
-            if let Some(ts_str) = &ended.ended_at {
-                if let Ok(ts) = DateTime::parse_from_rfc3339(ts_str) {
-                    let ts_utc = ts.with_timezone(&Utc);
-                    if max_ts.is_none() || Some(ts_utc) > max_ts {
-                        max_ts = Some(ts_utc);
-                    }
+            if let Some(ts_str) = &ended.ended_at
+                && let Ok(ts) = DateTime::parse_from_rfc3339(ts_str)
+            {
+                let ts_utc = ts.with_timezone(&Utc);
+                if max_ts.is_none() || Some(ts_utc) > max_ts {
+                    max_ts = Some(ts_utc);
                 }
             }
 
@@ -549,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_parse_process_empty() {
-        let json = r#"{}"#;
+        let json = r"{}";
 
         let proc: PtProcess = serde_json::from_str(json).unwrap();
         assert_eq!(proc.pid, 0);
@@ -592,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_parse_pt_output_empty() {
-        let json = r#"{}"#;
+        let json = r"{}";
 
         let output: PtOutput = serde_json::from_str(json).unwrap();
         assert!(output.processes.is_empty());

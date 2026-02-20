@@ -22,21 +22,17 @@ pub enum RegistryError {
 }
 
 /// Machine status values
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MachineStatus {
     Online,
     Offline,
+    #[default]
     Unknown,
 }
 
-impl Default for MachineStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
 impl MachineStatus {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Online => "online",
@@ -83,6 +79,7 @@ pub struct Machine {
 }
 
 impl Machine {
+    #[must_use]
     pub fn ssh_config(&self) -> Option<SshConfig> {
         let host = self.ssh_host.as_ref()?;
         let user = self.ssh_user.as_ref()?;
@@ -94,23 +91,22 @@ impl Machine {
     }
 
     fn normalize_metadata(mut self) -> Self {
-        if let Some(serde_json::Value::String(raw)) = &self.metadata {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
-                self.metadata = Some(value);
-            }
+        if let Some(serde_json::Value::String(raw)) = &self.metadata
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(raw)
+        {
+            self.metadata = Some(value);
         }
 
-        if self.tags.is_empty() {
-            if let Some(serde_json::Value::Object(map)) = &self.metadata {
-                if let Some(serde_json::Value::Array(tags)) = map.get("tags") {
-                    let parsed: Vec<String> = tags
-                        .iter()
-                        .filter_map(|tag| tag.as_str().map(|s| s.to_string()))
-                        .collect();
-                    if !parsed.is_empty() {
-                        self.tags = parsed;
-                    }
-                }
+        if self.tags.is_empty()
+            && let Some(serde_json::Value::Object(map)) = &self.metadata
+            && let Some(serde_json::Value::Array(tags)) = map.get("tags")
+        {
+            let parsed: Vec<String> = tags
+                .iter()
+                .filter_map(|tag| tag.as_str().map(std::string::ToString::to_string))
+                .collect();
+            if !parsed.is_empty() {
+                self.tags = parsed;
             }
         }
         self
@@ -176,25 +172,25 @@ pub struct MachineFilter {
 
 impl MachineFilter {
     fn matches(&self, machine: &Machine) -> bool {
-        if let Some(status) = self.status {
-            if machine.status != status {
-                return false;
-            }
+        if let Some(status) = self.status
+            && machine.status != status
+        {
+            return false;
         }
-        if let Some(is_local) = self.is_local {
-            if machine.is_local != is_local {
-                return false;
-            }
+        if let Some(is_local) = self.is_local
+            && machine.is_local != is_local
+        {
+            return false;
         }
-        if let Some(enabled) = self.enabled {
-            if machine.enabled != enabled {
-                return false;
-            }
+        if let Some(enabled) = self.enabled
+            && machine.enabled != enabled
+        {
+            return false;
         }
-        if let Some(tags) = &self.tags {
-            if !tags.iter().all(|tag| machine.tags.iter().any(|t| t == tag)) {
-                return false;
-            }
+        if let Some(tags) = &self.tags
+            && !tags.iter().all(|tag| machine.tags.iter().any(|t| t == tag))
+        {
+            return false;
         }
         true
     }
@@ -205,10 +201,16 @@ pub struct MachineRegistry {
 }
 
 impl MachineRegistry {
+    #[must_use]
     pub fn new(store: Arc<VcStore>) -> Self {
         Self { store }
     }
 
+    /// Load machines from config and persist them into the registry table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] when serialization or database upsert fails.
     pub fn load_from_config(&self, config: &VcConfig) -> Result<usize, RegistryError> {
         let mut machines: Vec<Machine> = Vec::new();
         let mut has_local = false;
@@ -224,11 +226,16 @@ impl MachineRegistry {
             machines.push(local_machine_default());
         }
 
-        let rows: Vec<_> = machines.iter().map(|m| m.to_row()).collect();
+        let rows: Vec<_> = machines.iter().map(Machine::to_row).collect();
         self.store.upsert_json("machines", &rows, &["machine_id"])?;
         Ok(rows.len())
     }
 
+    /// Insert or update a machine row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] when persistence fails.
     pub fn upsert_machine(&self, machine: &Machine) -> Result<(), RegistryError> {
         let row = machine.to_row();
         self.store
@@ -236,6 +243,11 @@ impl MachineRegistry {
         Ok(())
     }
 
+    /// Fetch a machine by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] when querying or deserialization fails.
     pub fn get_machine(&self, id: &str) -> Result<Option<Machine>, RegistryError> {
         let sql = format!(
             "SELECT machine_id, hostname, display_name, ssh_host, ssh_user, ssh_key_path, ssh_port, \
@@ -253,6 +265,11 @@ impl MachineRegistry {
         Ok(None)
     }
 
+    /// List machines, optionally applying a filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] when query execution fails.
     pub fn list_machines(
         &self,
         filter: Option<MachineFilter>,
@@ -266,7 +283,7 @@ impl MachineRegistry {
         let mut machines: Vec<Machine> = rows
             .into_iter()
             .filter_map(|row| serde_json::from_value::<Machine>(row).ok())
-            .map(|m| m.normalize_metadata())
+            .map(Machine::normalize_metadata)
             .collect();
 
         if let Some(filter) = filter {
@@ -276,6 +293,11 @@ impl MachineRegistry {
         Ok(machines)
     }
 
+    /// Update machine status and touch `last_seen_at`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] when update fails.
     pub fn update_status(&self, id: &str, status: MachineStatus) -> Result<(), RegistryError> {
         let sql = format!(
             "UPDATE machines SET status = '{}', last_seen_at = current_timestamp WHERE machine_id = '{}'",
@@ -286,12 +308,17 @@ impl MachineRegistry {
         Ok(())
     }
 
-    pub fn record_tool(&self, id: &str, tool: ToolInfo) -> Result<(), RegistryError> {
+    /// Record or update tool probe information for a machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] when upsert/update fails.
+    pub fn record_tool(&self, id: &str, tool: &ToolInfo) -> Result<(), RegistryError> {
         let row = serde_json::json!({
             "machine_id": id,
-            "tool_name": tool.tool_name,
-            "tool_path": tool.tool_path,
-            "tool_version": tool.tool_version,
+            "tool_name": &tool.tool_name,
+            "tool_path": &tool.tool_path,
+            "tool_version": &tool.tool_version,
             "is_available": tool.is_available,
             "probed_at": Utc::now().to_rfc3339(),
         });
@@ -307,6 +334,11 @@ impl MachineRegistry {
         Ok(())
     }
 
+    /// Enable or disable a machine in the registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] when update fails.
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RegistryError> {
         let sql = format!(
             "UPDATE machines SET enabled = {} WHERE machine_id = '{}'",

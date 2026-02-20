@@ -4,11 +4,12 @@
 //! - Issue and PR counts from `gh repo view --json` and `gh issue list --json`
 //! - PR status from `gh pr list --json`
 //! - Label breakdown for triage
-//! - Correlated with ru repo_id for cross-referencing
+//! - Correlated with ru `repo_id` for cross-referencing
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -184,9 +185,14 @@ impl GhCollector {
             .collect();
 
         // Sort by total count descending
-        result.sort_by(|a, b| (b.issue_count + b.pr_count).cmp(&(a.issue_count + a.pr_count)));
+        result.sort_by_key(|item| Reverse(item.issue_count + item.pr_count));
 
         result
+    }
+
+    #[must_use]
+    fn count_to_u32(count: usize) -> u32 {
+        u32::try_from(count).unwrap_or(u32::MAX)
     }
 
     fn parse_github_timestamp(ts: Option<&str>) -> Option<DateTime<Utc>> {
@@ -197,8 +203,12 @@ impl GhCollector {
         })
     }
 
-    fn last_activity_at(updated_at: Option<&str>, created_at: Option<&str>) -> Option<DateTime<Utc>> {
-        Self::parse_github_timestamp(updated_at).or_else(|| Self::parse_github_timestamp(created_at))
+    fn last_activity_at(
+        updated_at: Option<&str>,
+        created_at: Option<&str>,
+    ) -> Option<DateTime<Utc>> {
+        Self::parse_github_timestamp(updated_at)
+            .or_else(|| Self::parse_github_timestamp(created_at))
     }
 
     fn is_stale(
@@ -222,50 +232,56 @@ impl GhCollector {
         prs: &[GhPullRequest],
         now: DateTime<Utc>,
     ) -> TriageSummary {
-        let open_issues = issues.iter().filter(|i| i.state == "OPEN").count() as u32;
-        let open_prs = prs.iter().filter(|p| p.state == "OPEN").count() as u32;
-        let draft_prs = prs.iter().filter(|p| p.is_draft).count() as u32;
+        let open_issues = Self::count_to_u32(issues.iter().filter(|i| i.state == "OPEN").count());
+        let open_prs = Self::count_to_u32(prs.iter().filter(|p| p.state == "OPEN").count());
+        let draft_prs = Self::count_to_u32(prs.iter().filter(|p| p.is_draft).count());
 
-        let needs_review = prs
-            .iter()
-            .filter(|p| p.review_decision.as_deref() == Some("REVIEW_REQUIRED"))
-            .count() as u32;
+        let needs_review = Self::count_to_u32(
+            prs.iter()
+                .filter(|p| p.review_decision.as_deref() == Some("REVIEW_REQUIRED"))
+                .count(),
+        );
 
-        let approved = prs
-            .iter()
-            .filter(|p| p.review_decision.as_deref() == Some("APPROVED"))
-            .count() as u32;
+        let approved = Self::count_to_u32(
+            prs.iter()
+                .filter(|p| p.review_decision.as_deref() == Some("APPROVED"))
+                .count(),
+        );
 
-        let changes_requested = prs
-            .iter()
-            .filter(|p| p.review_decision.as_deref() == Some("CHANGES_REQUESTED"))
-            .count() as u32;
+        let changes_requested = Self::count_to_u32(
+            prs.iter()
+                .filter(|p| p.review_decision.as_deref() == Some("CHANGES_REQUESTED"))
+                .count(),
+        );
 
-        let stale_issues_30d = issues
-            .iter()
-            .filter(|issue| issue.state == "OPEN")
-            .filter(|issue| {
-                Self::is_stale(
-                    issue.updated_at.as_deref(),
-                    issue.created_at.as_deref(),
-                    &now,
-                    ChronoDuration::days(30),
-                )
-            })
-            .count() as u32;
+        let stale_issues_30d = Self::count_to_u32(
+            issues
+                .iter()
+                .filter(|issue| issue.state == "OPEN")
+                .filter(|issue| {
+                    Self::is_stale(
+                        issue.updated_at.as_deref(),
+                        issue.created_at.as_deref(),
+                        &now,
+                        ChronoDuration::days(30),
+                    )
+                })
+                .count(),
+        );
 
-        let stale_prs_7d = prs
-            .iter()
-            .filter(|pr| pr.state == "OPEN")
-            .filter(|pr| {
-                Self::is_stale(
-                    pr.updated_at.as_deref(),
-                    pr.created_at.as_deref(),
-                    &now,
-                    ChronoDuration::days(7),
-                )
-            })
-            .count() as u32;
+        let stale_prs_7d = Self::count_to_u32(
+            prs.iter()
+                .filter(|pr| pr.state == "OPEN")
+                .filter(|pr| {
+                    Self::is_stale(
+                        pr.updated_at.as_deref(),
+                        pr.created_at.as_deref(),
+                        &now,
+                        ChronoDuration::days(7),
+                    )
+                })
+                .count(),
+        );
 
         TriageSummary {
             open_issues,
@@ -298,6 +314,7 @@ impl Collector for GhCollector {
         false // Stateless snapshot
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut rows = vec![];
@@ -587,6 +604,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_triage_summary_stale_detection() {
         let now = Utc
             .with_ymd_and_hms(2026, 2, 20, 12, 0, 0)

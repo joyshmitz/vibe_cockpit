@@ -72,6 +72,7 @@ pub struct CassCollector;
 
 impl CassCollector {
     /// Create a new CASS collector
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -101,6 +102,7 @@ impl Collector for CassCollector {
         false // Each collection is a point-in-time snapshot
     }
 
+    #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
@@ -140,22 +142,21 @@ impl Collector for CassCollector {
 
                         // Check for stale index (> 24 hours)
                         if health.freshness_seconds > 86400 {
+                            let freshness = health.freshness_seconds;
                             warnings.push(Warning::warn(format!(
-                                "CASS index is stale: {} seconds since last refresh",
-                                health.freshness_seconds
+                                "CASS index is stale: {freshness} seconds since last refresh",
                             )));
                         }
                     }
                     Err(e) => {
                         warnings.push(Warning::warn(format!(
-                            "Failed to parse cass health output: {}",
-                            e
+                            "Failed to parse cass health output: {e}",
                         )));
                     }
                 }
             }
             Err(e) => {
-                warnings.push(Warning::warn(format!("Failed to run cass health: {}", e)));
+                warnings.push(Warning::warn(format!("Failed to run cass health: {e}")));
             }
         }
 
@@ -224,14 +225,13 @@ impl Collector for CassCollector {
                     }
                     Err(e) => {
                         warnings.push(Warning::warn(format!(
-                            "Failed to parse cass stats output: {}",
-                            e
+                            "Failed to parse cass stats output: {e}",
                         )));
                     }
                 }
             }
             Err(e) => {
-                warnings.push(Warning::warn(format!("Failed to run cass stats: {}", e)));
+                warnings.push(Warning::warn(format!("Failed to run cass stats: {e}")));
             }
         }
 
@@ -277,13 +277,13 @@ mod tests {
             health.last_index_at,
             Some("2026-01-27T00:00:00Z".to_string())
         );
-        assert_eq!(health.index_size_bytes, 52428800);
+        assert_eq!(health.index_size_bytes, 52_428_800);
         assert_eq!(health.freshness_seconds, 120);
     }
 
     #[test]
     fn test_cass_health_parsing_minimal() {
-        let json = r#"{}"#;
+        let json = r"{}";
 
         let health: CassHealthOutput = serde_json::from_str(json).unwrap();
 
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_default_impl() {
-        let collector = CassCollector::default();
+        let collector = CassCollector;
         assert_eq!(collector.name(), "cass");
     }
 

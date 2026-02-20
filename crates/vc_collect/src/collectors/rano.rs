@@ -97,6 +97,7 @@ pub struct RanoCollector {
 
 impl RanoCollector {
     /// Create a new collector with default 10-minute window
+    #[must_use]
     pub fn new() -> Self {
         Self {
             export_window: "10m".to_string(),
@@ -174,22 +175,21 @@ impl Collector for RanoCollector {
         // Build the export command
         let cmd = if let Some(since) = since_opt {
             // Use specific timestamp for incremental
-            format!(
-                "rano export --format jsonl --since {}",
-                since.format("%Y-%m-%dT%H:%M:%SZ")
-            )
+            let since_fmt = since.format("%Y-%m-%dT%H:%M:%SZ");
+            format!("rano export --format jsonl --since {since_fmt}")
         } else {
             // Use window-based export for initial collection
-            format!("rano export --format jsonl --since {}", self.export_window)
+            let window = &self.export_window;
+            format!("rano export --format jsonl --since {window}")
         };
 
         // Run the export command
         let output = match ctx.executor.run_timeout(&cmd, ctx.timeout).await {
             Ok(out) => out,
             Err(e) => {
-                warnings.push(Warning::warn(format!("rano export failed: {}", e)));
+                warnings.push(Warning::warn(format!("rano export failed: {e}")));
                 return Ok(CollectResult::empty()
-                    .with_warning(Warning::warn(format!("rano export failed: {}", e)))
+                    .with_warning(Warning::warn(format!("rano export failed: {e}")))
                     .with_duration(start.elapsed()));
             }
         };
@@ -207,12 +207,12 @@ impl Collector for RanoCollector {
             match serde_json::from_str::<RanoEvent>(line) {
                 Ok(event) => {
                     // Track max timestamp for cursor
-                    if let Some(ts_str) = &event.ts {
-                        if let Ok(ts) = DateTime::parse_from_rfc3339(ts_str) {
-                            let ts_utc = ts.with_timezone(&Utc);
-                            if max_ts.is_none() || Some(ts_utc) > max_ts {
-                                max_ts = Some(ts_utc);
-                            }
+                    if let Some(ts_str) = &event.ts
+                        && let Ok(ts) = DateTime::parse_from_rfc3339(ts_str)
+                    {
+                        let ts_utc = ts.with_timezone(&Utc);
+                        if max_ts.is_none() || Some(ts_utc) > max_ts {
+                            max_ts = Some(ts_utc);
                         }
                     }
 
@@ -238,7 +238,7 @@ impl Collector for RanoCollector {
                     }));
                 }
                 Err(e) => {
-                    warnings.push(Warning::warn(format!("Failed to parse rano event: {}", e)));
+                    warnings.push(Warning::warn(format!("Failed to parse rano event: {e}")));
                 }
             }
 
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_parse_event_empty() {
-        let json = r#"{}"#;
+        let json = r"{}";
 
         let event: RanoEvent = serde_json::from_str(json).unwrap();
         assert!(event.ts.is_none());

@@ -168,6 +168,7 @@ impl FailingDummyCollector {
     }
 
     /// Create a collector that always succeeds
+    #[must_use]
     pub fn always_succeeds() -> Self {
         Self {
             should_fail: false,
@@ -203,6 +204,7 @@ pub struct ToolRequiringDummyCollector {
 
 impl ToolRequiringDummyCollector {
     /// Create a collector requiring a specific tool
+    #[must_use]
     pub fn new(tool: &'static str) -> Self {
         Self { required: tool }
     }
@@ -248,6 +250,7 @@ pub struct BatchDummyCollector {
 }
 
 impl BatchDummyCollector {
+    #[must_use]
     pub fn new(count: usize) -> Self {
         Self { row_count: count }
     }
@@ -501,6 +504,7 @@ struct UptimeData {
 
 /// Parsed memory data
 #[derive(Default)]
+#[allow(clippy::struct_field_names)]
 struct MemoryData {
     mem_total_bytes: Option<i64>,
     mem_available_bytes: Option<i64>,
@@ -619,29 +623,30 @@ impl FallbackProbeCollector {
 
         // Try /proc/loadavg on Linux first (most reliable)
         if platform == "linux" {
-            if let Ok(output) = ctx.executor.run("cat /proc/loadavg", ctx.timeout).await {
-                if output.exit_code == 0 {
-                    raw_outputs.push(format!("/proc/loadavg:\n{}", output.stdout));
-                    // Format: "0.25 0.18 0.12 1/234 5678"
-                    let parts: Vec<&str> = output.stdout.trim().split_whitespace().collect();
-                    if parts.len() >= 3 {
-                        data.load1 = parts[0].parse().ok();
-                        data.load5 = parts[1].parse().ok();
-                        data.load15 = parts[2].parse().ok();
-                    }
+            if let Ok(output) = ctx.executor.run("cat /proc/loadavg", ctx.timeout).await
+                && output.exit_code == 0
+            {
+                raw_outputs.push(format!("/proc/loadavg:\n{}", output.stdout));
+                // Format: "0.25 0.18 0.12 1/234 5678"
+                let parts: Vec<&str> = output.stdout.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    data.load1 = parts[0].parse().ok();
+                    data.load5 = parts[1].parse().ok();
+                    data.load15 = parts[2].parse().ok();
                 }
             }
 
             // Try /proc/uptime for uptime seconds
-            if let Ok(output) = ctx.executor.run("cat /proc/uptime", ctx.timeout).await {
-                if output.exit_code == 0 {
-                    raw_outputs.push(format!("/proc/uptime:\n{}", output.stdout));
-                    // Format: "12345.67 23456.78" (uptime idle_time)
-                    if let Some(uptime_str) = output.stdout.trim().split_whitespace().next() {
-                        if let Ok(uptime_float) = uptime_str.parse::<f64>() {
-                            data.uptime_seconds = Some(uptime_float as i64);
-                        }
-                    }
+            if let Ok(output) = ctx.executor.run("cat /proc/uptime", ctx.timeout).await
+                && output.exit_code == 0
+            {
+                raw_outputs.push(format!("/proc/uptime:\n{}", output.stdout));
+                // Format: "12345.67 23456.78" (uptime idle_time)
+                if let Some(uptime_str) = output.stdout.split_whitespace().next()
+                    && let Some(seconds) = uptime_str.split('.').next()
+                    && let Ok(uptime_seconds) = seconds.parse::<i64>()
+                {
+                    data.uptime_seconds = Some(uptime_seconds);
                 }
             }
         }
@@ -704,14 +709,14 @@ impl FallbackProbeCollector {
     /// Parse uptime duration string to seconds
     fn parse_uptime_duration(duration: &str) -> Option<i64> {
         let mut total_seconds: i64 = 0;
-        let parts: Vec<&str> = duration.split(',').map(|s| s.trim()).collect();
+        let parts: Vec<&str> = duration.split(',').map(str::trim).collect();
 
         for part in parts {
             if part.contains("day") {
-                if let Some(days_str) = part.split_whitespace().next() {
-                    if let Ok(days) = days_str.parse::<i64>() {
-                        total_seconds += days * 86400;
-                    }
+                if let Some(days_str) = part.split_whitespace().next()
+                    && let Ok(days) = days_str.parse::<i64>()
+                {
+                    total_seconds += days * 86400;
                 }
             } else if part.contains(':') {
                 let time_parts: Vec<&str> = part.split(':').collect();
@@ -722,21 +727,20 @@ impl FallbackProbeCollector {
                     ) {
                         total_seconds += hours * 3600 + mins * 60;
                     }
-                } else if time_parts.len() == 3 {
-                    if let (Ok(hours), Ok(mins), Ok(secs)) = (
+                } else if time_parts.len() == 3
+                    && let (Ok(hours), Ok(mins), Ok(secs)) = (
                         time_parts[0].trim().parse::<i64>(),
                         time_parts[1].trim().parse::<i64>(),
                         time_parts[2].trim().parse::<i64>(),
-                    ) {
-                        total_seconds += hours * 3600 + mins * 60 + secs;
-                    }
+                    )
+                {
+                    total_seconds += hours * 3600 + mins * 60 + secs;
                 }
-            } else if part.contains("min") {
-                if let Some(mins_str) = part.split_whitespace().next() {
-                    if let Ok(mins) = mins_str.parse::<i64>() {
-                        total_seconds += mins * 60;
-                    }
-                }
+            } else if part.contains("min")
+                && let Some(mins_str) = part.split_whitespace().next()
+                && let Ok(mins) = mins_str.parse::<i64>()
+            {
+                total_seconds += mins * 60;
             }
         }
 
@@ -757,31 +761,31 @@ impl FallbackProbeCollector {
         let mut data = MemoryData::default();
 
         if platform == "linux" {
-            if let Ok(output) = ctx.executor.run("cat /proc/meminfo", ctx.timeout).await {
-                if output.exit_code == 0 {
-                    raw_outputs.push(format!("/proc/meminfo:\n{}", output.stdout));
-                    Self::parse_proc_meminfo(&output.stdout, &mut data);
-                }
+            if let Ok(output) = ctx.executor.run("cat /proc/meminfo", ctx.timeout).await
+                && output.exit_code == 0
+            {
+                raw_outputs.push(format!("/proc/meminfo:\n{}", output.stdout));
+                Self::parse_proc_meminfo(&output.stdout, &mut data);
             }
 
-            if data.mem_total_bytes.is_none() {
-                if let Ok(output) = ctx.executor.run("free -b", ctx.timeout).await {
-                    if output.exit_code == 0 {
-                        raw_outputs.push(format!("free -b:\n{}", output.stdout));
-                        Self::parse_free_output(&output.stdout, &mut data);
-                    } else {
-                        warnings.push("free command failed".to_string());
-                    }
+            if data.mem_total_bytes.is_none()
+                && let Ok(output) = ctx.executor.run("free -b", ctx.timeout).await
+            {
+                if output.exit_code == 0 {
+                    raw_outputs.push(format!("free -b:\n{}", output.stdout));
+                    Self::parse_free_output(&output.stdout, &mut data);
+                } else {
+                    warnings.push("free command failed".to_string());
                 }
             }
         } else {
             // macOS
-            if let Ok(output) = ctx.executor.run("sysctl hw.memsize", ctx.timeout).await {
-                if output.exit_code == 0 {
-                    raw_outputs.push(format!("sysctl hw.memsize:\n{}", output.stdout));
-                    if let Some(val) = output.stdout.split(':').nth(1) {
-                        data.mem_total_bytes = val.trim().parse().ok();
-                    }
+            if let Ok(output) = ctx.executor.run("sysctl hw.memsize", ctx.timeout).await
+                && output.exit_code == 0
+            {
+                raw_outputs.push(format!("sysctl hw.memsize:\n{}", output.stdout));
+                if let Some(val) = output.stdout.split(':').nth(1) {
+                    data.mem_total_bytes = val.trim().parse().ok();
                 }
             }
 
@@ -848,7 +852,7 @@ impl FallbackProbeCollector {
         }
     }
 
-    /// Parse vm_stat output (macOS)
+    /// Parse `vm_stat` output (macOS)
     fn parse_vm_stat(output: &str, data: &mut MemoryData) {
         let page_size: i64 = 4096;
         let mut pages_free: i64 = 0;
@@ -913,7 +917,9 @@ impl FallbackProbeCollector {
                             continue;
                         }
 
-                        let use_percent = (used_kb as f64 / total_kb as f64) * 100.0;
+                        let used = u32::try_from(used_kb.max(0)).unwrap_or(u32::MAX);
+                        let total = u32::try_from(total_kb.max(1)).unwrap_or(u32::MAX);
+                        let use_percent = (f64::from(used) / f64::from(total)) * 100.0;
 
                         disks.push(DiskUsage {
                             mount,
@@ -1131,7 +1137,7 @@ mod tests {
 
         // Without ru installed, we expect warnings but no crash
         // The result may have empty rows and warnings
-        assert!(result.warnings.len() > 0 || result.rows.is_empty());
+        assert!(!result.warnings.is_empty() || result.rows.is_empty());
     }
 
     // =============================================================================
@@ -1223,39 +1229,42 @@ mod tests {
     fn test_parse_proc_meminfo() {
         let mut data = MemoryData::default();
 
-        let output = r#"MemTotal:       16384000 kB
+        let output = r"MemTotal:       16384000 kB
 MemFree:         1234567 kB
 MemAvailable:    8000000 kB
 Buffers:          500000 kB
 Cached:          4000000 kB
 SwapTotal:       4194304 kB
 SwapFree:        4000000 kB
-"#;
+";
 
         FallbackProbeCollector::parse_proc_meminfo(output, &mut data);
 
-        assert_eq!(data.mem_total_bytes, Some(16384000 * 1024));
-        assert_eq!(data.mem_available_bytes, Some(8000000 * 1024));
-        assert_eq!(data.swap_total_bytes, Some(4194304 * 1024));
+        assert_eq!(data.mem_total_bytes, Some(16_384_000 * 1024));
+        assert_eq!(data.mem_available_bytes, Some(8_000_000 * 1024));
+        assert_eq!(data.swap_total_bytes, Some(4_194_304 * 1024));
         // swap_used = total - free = 4194304 - 4000000 = 194304 kB
-        assert_eq!(data.swap_used_bytes, Some(4194304 * 1024 - 4000000 * 1024));
+        assert_eq!(
+            data.swap_used_bytes,
+            Some(4_194_304 * 1024 - 4_000_000 * 1024)
+        );
     }
 
     #[test]
     fn test_parse_free_output() {
         let mut data = MemoryData::default();
 
-        let output = r#"              total        used        free      shared  buff/cache   available
+        let output = r"              total        used        free      shared  buff/cache   available
 Mem:    16777216000  8000000000  2000000000   500000000  6000000000  8000000000
 Swap:    4294967296  1000000000  3294967296
-"#;
+";
 
         FallbackProbeCollector::parse_free_output(output, &mut data);
 
-        assert_eq!(data.mem_total_bytes, Some(16777216000));
-        assert_eq!(data.mem_used_bytes, Some(8000000000));
-        assert_eq!(data.mem_available_bytes, Some(8000000000));
-        assert_eq!(data.swap_total_bytes, Some(4294967296));
-        assert_eq!(data.swap_used_bytes, Some(1000000000));
+        assert_eq!(data.mem_total_bytes, Some(16_777_216_000));
+        assert_eq!(data.mem_used_bytes, Some(8_000_000_000));
+        assert_eq!(data.mem_available_bytes, Some(8_000_000_000));
+        assert_eq!(data.swap_total_bytes, Some(4_294_967_296));
+        assert_eq!(data.swap_used_bytes, Some(1_000_000_000));
     }
 }

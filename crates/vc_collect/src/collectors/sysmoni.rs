@@ -181,6 +181,7 @@ impl Collector for SysmoniCollector {
         false // Each collection is a point-in-time snapshot
     }
 
+    #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
@@ -366,21 +367,21 @@ mod tests {
         assert!((output.cpu.load_15 - 1.5).abs() < 0.01);
 
         // Memory
-        assert_eq!(output.memory.total_bytes, 34359738368);
-        assert_eq!(output.memory.used_bytes, 23622320128);
-        assert_eq!(output.memory.available_bytes, 10737418240);
-        assert_eq!(output.memory.swap_total_bytes, 8589934592);
+        assert_eq!(output.memory.total_bytes, 34_359_738_368);
+        assert_eq!(output.memory.used_bytes, 23_622_320_128);
+        assert_eq!(output.memory.available_bytes, 10_737_418_240);
+        assert_eq!(output.memory.swap_total_bytes, 8_589_934_592);
         assert_eq!(output.memory.swap_used_bytes, 0);
 
         // Disk
-        assert_eq!(output.disk.read_bytes_per_sec, 1048576);
-        assert_eq!(output.disk.write_bytes_per_sec, 2097152);
+        assert_eq!(output.disk.read_bytes_per_sec, 1_048_576);
+        assert_eq!(output.disk.write_bytes_per_sec, 2_097_152);
         assert_eq!(output.disk.filesystems.len(), 1);
         assert_eq!(output.disk.filesystems[0].mount, "/");
 
         // Network
-        assert_eq!(output.network.rx_bytes_per_sec, 10485760);
-        assert_eq!(output.network.tx_bytes_per_sec, 5242880);
+        assert_eq!(output.network.rx_bytes_per_sec, 10_485_760);
+        assert_eq!(output.network.tx_bytes_per_sec, 5_242_880);
 
         // Processes
         assert_eq!(output.processes.len(), 1);
@@ -391,11 +392,11 @@ mod tests {
     #[test]
     fn test_sysmoni_output_parsing_minimal() {
         // Minimal valid JSON with defaults
-        let json = r#"{}"#;
+        let json = r"{}";
 
         let output: SysmoniOutput = serde_json::from_str(json).unwrap();
 
-        assert_eq!(output.cpu.total_percent, 0.0);
+        assert!(output.cpu.total_percent.abs() < f64::EPSILON);
         assert!(output.cpu.per_core.is_empty());
         assert_eq!(output.memory.total_bytes, 0);
         assert!(output.disk.filesystems.is_empty());
@@ -419,8 +420,8 @@ mod tests {
 
         assert!((output.cpu.total_percent - 50.0).abs() < 0.01);
         assert!((output.cpu.load_1 - 1.0).abs() < 0.01);
-        assert_eq!(output.cpu.load_5, 0.0); // Default
-        assert_eq!(output.memory.total_bytes, 16000000000);
+        assert!(output.cpu.load_5.abs() < f64::EPSILON); // Default
+        assert_eq!(output.memory.total_bytes, 16_000_000_000);
         assert_eq!(output.memory.used_bytes, 0); // Default
     }
 
@@ -451,16 +452,16 @@ mod tests {
     #[test]
     fn test_disk_metrics_bytes_per_sec_conversion() {
         // Verify MB/s conversion math
-        let bytes_per_sec: i64 = 10_485_760; // 10 MB/s
-        let mbps = bytes_per_sec as f64 / 1_000_000.0;
+        let bytes_per_sec: i32 = 10_485_760; // 10 MB/s
+        let mbps = f64::from(bytes_per_sec) / 1_000_000.0;
         assert!((mbps - 10.48576).abs() < 0.0001);
     }
 
     #[test]
     fn test_filesystem_usage_calculation() {
-        let total: i64 = 500_000_000_000; // 500 GB
-        let used: i64 = 350_000_000_000; // 350 GB
-        let usage_pct = (used as f64 / total as f64) * 100.0;
+        let total: i32 = 500_000;
+        let used: i32 = 350_000;
+        let usage_pct = (f64::from(used) / f64::from(total)) * 100.0;
         assert!((usage_pct - 70.0).abs() < 0.01);
     }
 }

@@ -9,6 +9,7 @@
 //! 6. Deduplication - Skip entries too similar to existing ones
 
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::sync::Arc;
 use vc_store::VcStore;
 
@@ -66,6 +67,7 @@ pub struct SolutionMiner {
 
 impl SolutionMiner {
     /// Create a new miner with the given store.
+    #[must_use]
     pub fn new(store: Arc<VcStore>) -> Self {
         let knowledge = KnowledgeStore::new(store.clone());
         Self {
@@ -76,12 +78,17 @@ impl SolutionMiner {
     }
 
     /// Set minimum quality threshold (1-5).
+    #[must_use]
     pub fn with_min_quality(mut self, quality: u8) -> Self {
         self.min_quality = quality.clamp(1, 5);
         self
     }
 
     /// List unmined session candidates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if querying unmined sessions fails.
     pub fn candidates(&self, limit: usize) -> Result<Vec<SessionCandidate>, KnowledgeError> {
         let rows = self.store.list_unmined_sessions(limit)?;
         let candidates: Vec<SessionCandidate> = rows
@@ -90,12 +97,24 @@ impl SolutionMiner {
                 Some(SessionCandidate {
                     session_id: row.get("session_id")?.as_str()?.to_string(),
                     machine_id: row.get("machine_id")?.as_str()?.to_string(),
-                    program: row.get("program").and_then(|v| v.as_str()).map(String::from),
+                    program: row
+                        .get("program")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
                     model: row.get("model").and_then(|v| v.as_str()).map(String::from),
-                    repo_path: row.get("repo_path").and_then(|v| v.as_str()).map(String::from),
-                    started_at: row.get("started_at").and_then(|v| v.as_str()).map(String::from),
-                    ended_at: row.get("ended_at").and_then(|v| v.as_str()).map(String::from),
-                    token_count: row.get("token_count").and_then(|v| v.as_i64()),
+                    repo_path: row
+                        .get("repo_path")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    started_at: row
+                        .get("started_at")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    ended_at: row
+                        .get("ended_at")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    token_count: row.get("token_count").and_then(serde_json::Value::as_i64),
                 })
             })
             .collect();
@@ -103,6 +122,10 @@ impl SolutionMiner {
     }
 
     /// Check if a session has already been mined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if mined-session lookup fails.
     pub fn is_mined(&self, session_id: &str) -> Result<bool, KnowledgeError> {
         Ok(self.store.is_session_mined(session_id)?)
     }
@@ -111,6 +134,10 @@ impl SolutionMiner {
     ///
     /// This is a rule-based extractor that identifies patterns in session data.
     /// A future version could use LLM analysis for deeper extraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if session analysis requires store access and that access fails.
     pub fn analyze_session(
         &self,
         candidate: &SessionCandidate,
@@ -138,7 +165,7 @@ impl SolutionMiner {
                 tags.push(repo_name.to_string());
 
                 pairs.push(ProblemSolutionPair {
-                    problem: format!("Agent session in {} on {}", repo_name, program),
+                    problem: format!("Agent session in {repo_name} on {program}"),
                     solution: format!(
                         "Session completed successfully using {} with {} tokens",
                         candidate.model.as_deref().unwrap_or("unknown model"),
@@ -159,10 +186,11 @@ impl SolutionMiner {
     }
 
     /// Extract solutions from a session and store them in the knowledge base.
-    pub fn extract(
-        &self,
-        candidate: &SessionCandidate,
-    ) -> Result<MiningResult, KnowledgeError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if session mining state updates or store writes fail.
+    pub fn extract(&self, candidate: &SessionCandidate) -> Result<MiningResult, KnowledgeError> {
         // Check if already mined
         if self.is_mined(&candidate.session_id)? {
             return Ok(MiningResult {
@@ -179,8 +207,8 @@ impl SolutionMiner {
 
         let mut entries_created = Vec::new();
         let mut quality_sum = 0u32;
-        let mut solutions = 0;
-        let patterns = 0;
+        let mut solutions = 0_i32;
+        let patterns = 0_i32;
 
         for pair in &pairs {
             if pair.quality < self.min_quality {
@@ -197,25 +225,26 @@ impl SolutionMiner {
                 },
             )?;
 
-            let is_duplicate = search_results.iter().any(|r| {
-                r.entry.title == self.generate_title(pair)
-            });
+            let is_duplicate = search_results
+                .iter()
+                .any(|r| r.entry.title == Self::generate_title(pair));
 
             if is_duplicate {
                 continue;
             }
 
-            let content = self.format_solution(pair);
-            let entry = KnowledgeEntry::new(EntryType::Solution, self.generate_title(pair), content)
-                .with_summary(&pair.problem)
-                .with_session(&candidate.session_id)
-                .with_tags(pair.tags.clone());
+            let content = Self::format_solution(pair);
+            let entry =
+                KnowledgeEntry::new(EntryType::Solution, Self::generate_title(pair), content)
+                    .with_summary(&pair.problem)
+                    .with_session(&candidate.session_id)
+                    .with_tags(pair.tags.clone());
 
             match self.knowledge.insert(&entry) {
                 Ok(id) => {
                     entries_created.push(id);
                     solutions += 1;
-                    quality_sum += pair.quality as u32;
+                    quality_sum += u32::from(pair.quality);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to store solution: {e}");
@@ -224,7 +253,7 @@ impl SolutionMiner {
         }
 
         let quality_avg = if solutions > 0 {
-            quality_sum as f64 / solutions as f64
+            f64::from(quality_sum) / f64::from(solutions)
         } else {
             0.0
         };
@@ -235,19 +264,30 @@ impl SolutionMiner {
             &candidate.machine_id,
             solutions,
             patterns,
-            if solutions > 0 { Some(quality_avg) } else { None },
+            if solutions > 0 {
+                Some(quality_avg)
+            } else {
+                None
+            },
         )?;
+
+        let solutions_extracted = usize::try_from(solutions).unwrap_or_default();
+        let patterns_extracted = usize::try_from(patterns).unwrap_or_default();
 
         Ok(MiningResult {
             session_id: candidate.session_id.clone(),
-            solutions_extracted: solutions as usize,
-            patterns_extracted: patterns as usize,
+            solutions_extracted,
+            patterns_extracted,
             quality_avg,
             entries_created,
         })
     }
 
     /// Run mining on all available candidates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading candidate sessions fails.
     pub fn mine_all(&self, max_sessions: usize) -> Result<Vec<MiningResult>, KnowledgeError> {
         let candidates = self.candidates(max_sessions)?;
         let mut results = Vec::new();
@@ -268,30 +308,34 @@ impl SolutionMiner {
     }
 
     /// Get mining statistics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if statistics query fails.
     pub fn stats(&self) -> Result<MiningStats, KnowledgeError> {
         let json = self.store.mining_stats()?;
 
         Ok(MiningStats {
             total_mined: json
                 .get("total_mined")
-                .and_then(|v| v.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0),
             total_solutions: json
                 .get("total_solutions")
-                .and_then(|v| v.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0),
             total_patterns: json
                 .get("total_patterns")
-                .and_then(|v| v.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0),
             avg_quality: json
                 .get("avg_quality")
-                .and_then(|v| v.as_f64())
+                .and_then(serde_json::Value::as_f64)
                 .unwrap_or(0.0),
         })
     }
 
-    fn generate_title(&self, pair: &ProblemSolutionPair) -> String {
+    fn generate_title(pair: &ProblemSolutionPair) -> String {
         let max_len = 80;
         if pair.problem.len() <= max_len {
             pair.problem.clone()
@@ -300,7 +344,7 @@ impl SolutionMiner {
         }
     }
 
-    fn format_solution(&self, pair: &ProblemSolutionPair) -> String {
+    fn format_solution(pair: &ProblemSolutionPair) -> String {
         let mut content = String::new();
 
         content.push_str("## Problem\n");
@@ -311,14 +355,14 @@ impl SolutionMiner {
         if !pair.insights.is_empty() {
             content.push_str("\n\n## Key Insights\n");
             for insight in &pair.insights {
-                content.push_str(&format!("- {insight}\n"));
+                let _ = writeln!(content, "- {insight}");
             }
         }
 
         if !pair.code_snippets.is_empty() {
             content.push_str("\n\n## Code Examples\n");
             for snippet in &pair.code_snippets {
-                content.push_str(&format!("```\n{snippet}\n```\n"));
+                let _ = writeln!(content, "```\n{snippet}\n```");
             }
         }
 
@@ -356,7 +400,7 @@ mod tests {
             repo_path: Some("/data/projects/myrepo".to_string()),
             started_at: Some("2026-01-01T00:00:00Z".to_string()),
             ended_at: Some("2026-01-01T01:00:00Z".to_string()),
-            token_count: Some(25000),
+            token_count: Some(25_000),
         };
         let json = serde_json::to_string(&candidate).unwrap();
         assert!(json.contains("sess-123"));
@@ -443,7 +487,7 @@ mod tests {
             repo_path: Some("/data/projects/big_project".to_string()),
             started_at: None,
             ended_at: None,
-            token_count: Some(100000),
+            token_count: Some(100_000),
         };
         let pairs = miner.analyze_session(&candidate).unwrap();
         assert_eq!(pairs[0].quality, 4);
@@ -469,8 +513,6 @@ mod tests {
 
     #[test]
     fn test_format_solution() {
-        let store = Arc::new(VcStore::open_memory().unwrap());
-        let miner = SolutionMiner::new(store);
         let pair = ProblemSolutionPair {
             problem: "Build fails".to_string(),
             solution: "Add dependency".to_string(),
@@ -479,7 +521,7 @@ mod tests {
             quality: 4,
             tags: vec![],
         };
-        let content = miner.format_solution(&pair);
+        let content = SolutionMiner::format_solution(&pair);
         assert!(content.contains("## Problem"));
         assert!(content.contains("## Solution"));
         assert!(content.contains("## Key Insights"));
@@ -489,8 +531,6 @@ mod tests {
 
     #[test]
     fn test_generate_title_short() {
-        let store = Arc::new(VcStore::open_memory().unwrap());
-        let miner = SolutionMiner::new(store);
         let pair = ProblemSolutionPair {
             problem: "Short problem".to_string(),
             solution: String::new(),
@@ -499,13 +539,11 @@ mod tests {
             quality: 3,
             tags: vec![],
         };
-        assert_eq!(miner.generate_title(&pair), "Short problem");
+        assert_eq!(SolutionMiner::generate_title(&pair), "Short problem");
     }
 
     #[test]
     fn test_generate_title_long() {
-        let store = Arc::new(VcStore::open_memory().unwrap());
-        let miner = SolutionMiner::new(store);
         let long = "A".repeat(100);
         let pair = ProblemSolutionPair {
             problem: long,
@@ -515,7 +553,7 @@ mod tests {
             quality: 3,
             tags: vec![],
         };
-        let title = miner.generate_title(&pair);
+        let title = SolutionMiner::generate_title(&pair);
         assert_eq!(title.len(), 80);
         assert!(title.ends_with(".."));
     }

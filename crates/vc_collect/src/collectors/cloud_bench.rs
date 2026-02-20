@@ -1,13 +1,13 @@
-//! cloud_benchmarker collector - VPS machine performance baseline and drift detection
+//! `cloud_benchmarker` collector - VPS machine performance baseline and drift detection
 //!
-//! This collector uses HTTP Scrape or SQLite direct read patterns to collect
-//! machine performance benchmarks from cloud_benchmarker.
+//! This collector uses HTTP Scrape or `SQLite` direct read patterns to collect
+//! machine performance benchmarks from `cloud_benchmarker`.
 //!
 //! ## Integration Method
-//! - Primary: HTTP endpoints from FastAPI server
+//! - Primary: HTTP endpoints from `FastAPI` server
 //!   - GET /data/raw/ for individual benchmark results
 //!   - GET /data/overall/ for aggregate scores
-//! - Fallback: Read SQLite database directly if server not running
+//! - Fallback: Read `SQLite` database directly if server not running
 //!
 //! ## Tables Populated
 //! - `cloud_bench_raw`: Individual benchmark results
@@ -23,7 +23,7 @@ use crate::{CollectContext, CollectError, CollectResult, Collector, RowBatch, Wa
 /// Default drift threshold (10%)
 const DEFAULT_DRIFT_THRESHOLD: f64 = 0.10;
 
-/// Default cloud_benchmarker HTTP port
+/// Default `cloud_benchmarker` HTTP port
 const DEFAULT_PORT: u16 = 8765;
 
 /// Raw benchmark result from /data/raw/
@@ -78,19 +78,20 @@ pub struct OverallResponse {
     pub success: bool,
 }
 
-/// cloud_benchmarker collector for VPS performance monitoring
+/// `cloud_benchmarker` collector for VPS performance monitoring
 ///
 /// Collects benchmark results and calculates drift from baseline
 /// to detect performance degradation over time.
 pub struct CloudBenchCollector {
-    /// HTTP port for cloud_benchmarker API
+    /// HTTP port for `cloud_benchmarker` API
     port: u16,
     /// Drift threshold (percentage change from baseline to flag as anomaly)
     drift_threshold: f64,
 }
 
 impl CloudBenchCollector {
-    /// Create a new cloud_benchmarker collector with default settings
+    /// Create a new `cloud_benchmarker` collector with default settings
+    #[must_use]
     pub fn new() -> Self {
         Self {
             port: DEFAULT_PORT,
@@ -99,12 +100,14 @@ impl CloudBenchCollector {
     }
 
     /// Create with custom port
+    #[must_use]
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
 
     /// Create with custom drift threshold
+    #[must_use]
     pub fn with_drift_threshold(mut self, threshold: f64) -> Self {
         self.drift_threshold = threshold;
         self
@@ -151,6 +154,7 @@ impl Collector for CloudBenchCollector {
         false // Each collection is a snapshot of current state
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
@@ -160,10 +164,10 @@ impl Collector for CloudBenchCollector {
         let base_url = format!("http://127.0.0.1:{}", self.port);
 
         // Collect raw benchmarks
-        let raw_url = format!("{}/data/raw/", base_url);
+        let raw_url = format!("{base_url}/data/raw/");
         let raw_result = ctx
             .executor
-            .run_timeout(&format!("curl -s -f '{}'", raw_url), ctx.timeout)
+            .run_timeout(&format!("curl -s -f '{raw_url}'"), ctx.timeout)
             .await;
 
         let mut overall_score: Option<f64> = None;
@@ -220,7 +224,7 @@ impl Collector for CloudBenchCollector {
                         }
                     } else {
                         warnings.push(
-                            Warning::warn(format!("Failed to parse raw benchmarks: {}", e))
+                            Warning::warn(format!("Failed to parse raw benchmarks: {e}"))
                                 .with_context(output.chars().take(500).collect::<String>()),
                         );
                     }
@@ -228,16 +232,15 @@ impl Collector for CloudBenchCollector {
             }
         } else if let Err(e) = raw_result {
             warnings.push(Warning::warn(format!(
-                "Could not fetch raw benchmarks from {}: {}",
-                raw_url, e
+                "Could not fetch raw benchmarks from {raw_url}: {e}",
             )));
         }
 
         // Collect overall scores
-        let overall_url = format!("{}/data/overall/", base_url);
+        let overall_url = format!("{base_url}/data/overall/");
         let overall_result = ctx
             .executor
-            .run_timeout(&format!("curl -s -f '{}'", overall_url), ctx.timeout)
+            .run_timeout(&format!("curl -s -f '{overall_url}'"), ctx.timeout)
             .await;
 
         if let Ok(output) = overall_result {
@@ -253,7 +256,7 @@ impl Collector for CloudBenchCollector {
                         "memory_score": scores.memory_score,
                         "disk_score": scores.disk_score,
                         "network_score": scores.network_score,
-                        "subscores_json": scores.subscores.as_ref().map(|s| serde_json::to_string(s).ok()).flatten(),
+                        "subscores_json": scores.subscores.as_ref().and_then(|s| serde_json::to_string(s).ok()),
                         "raw_json": output,
                     });
 
@@ -264,15 +267,14 @@ impl Collector for CloudBenchCollector {
                 }
                 Err(e) => {
                     warnings.push(
-                        Warning::warn(format!("Failed to parse overall scores: {}", e))
+                        Warning::warn(format!("Failed to parse overall scores: {e}"))
                             .with_context(output.chars().take(500).collect::<String>()),
                     );
                 }
             }
         } else if let Err(e) = overall_result {
             warnings.push(Warning::warn(format!(
-                "Could not fetch overall scores from {}: {}",
-                overall_url, e
+                "Could not fetch overall scores from {overall_url}: {e}",
             )));
         }
 
@@ -291,52 +293,44 @@ impl Collector for CloudBenchCollector {
 
             for db_path in &db_paths {
                 // Use shell to expand variables
-                let check_cmd = format!(
-                    "test -f {} && sqlite3 {} \"SELECT 1\" 2>/dev/null",
-                    db_path, db_path
-                );
+                let check_cmd =
+                    format!("test -f {db_path} && sqlite3 {db_path} \"SELECT 1\" 2>/dev/null");
 
-                if let Ok(output) = ctx.executor.run_timeout(&check_cmd, ctx.timeout).await {
-                    if output.contains('1') {
-                        // Database exists and is readable
-                        let query_cmd = format!(
-                            "sqlite3 -json {} \"SELECT * FROM benchmarks ORDER BY timestamp DESC LIMIT 100\"",
-                            db_path
-                        );
+                if let Ok(output) = ctx.executor.run_timeout(&check_cmd, ctx.timeout).await
+                    && output.contains('1')
+                {
+                    // Database exists and is readable
+                    let query_cmd = format!(
+                        "sqlite3 -json {db_path} \"SELECT * FROM benchmarks ORDER BY timestamp DESC LIMIT 100\""
+                    );
 
-                        if let Ok(json_output) =
-                            ctx.executor.run_timeout(&query_cmd, ctx.timeout).await
-                        {
-                            if let Ok(rows) =
-                                serde_json::from_str::<Vec<serde_json::Value>>(&json_output)
-                            {
-                                let raw_rows: Vec<serde_json::Value> = rows
-                                    .iter()
-                                    .map(|r| {
-                                        serde_json::json!({
-                                            "machine_id": ctx.machine_id,
-                                            "collected_at": ctx.collected_at.to_rfc3339(),
-                                            "benchmark_type": r.get("type").unwrap_or(&serde_json::Value::Null),
-                                            "benchmark_name": r.get("name").unwrap_or(&serde_json::Value::Null),
-                                            "value": r.get("value").unwrap_or(&serde_json::Value::Null),
-                                            "unit": r.get("unit").unwrap_or(&serde_json::Value::Null),
-                                            "raw_json": serde_json::to_string(&r).ok(),
-                                        })
-                                    })
-                                    .collect();
+                    if let Ok(json_output) = ctx.executor.run_timeout(&query_cmd, ctx.timeout).await
+                        && let Ok(rows) =
+                            serde_json::from_str::<Vec<serde_json::Value>>(&json_output)
+                    {
+                        let raw_rows: Vec<serde_json::Value> = rows
+                            .iter()
+                            .map(|r| {
+                                serde_json::json!({
+                                    "machine_id": ctx.machine_id,
+                                    "collected_at": ctx.collected_at.to_rfc3339(),
+                                    "benchmark_type": r.get("type").unwrap_or(&serde_json::Value::Null),
+                                    "benchmark_name": r.get("name").unwrap_or(&serde_json::Value::Null),
+                                    "value": r.get("value").unwrap_or(&serde_json::Value::Null),
+                                    "unit": r.get("unit").unwrap_or(&serde_json::Value::Null),
+                                    "raw_json": serde_json::to_string(&r).ok(),
+                                })
+                            })
+                            .collect();
 
-                                if !raw_rows.is_empty() {
-                                    batches.push(RowBatch {
-                                        table: "cloud_bench_raw".to_string(),
-                                        rows: raw_rows,
-                                    });
-                                    warnings.push(Warning::info(format!(
-                                        "Used SQLite fallback: {}",
-                                        db_path
-                                    )));
-                                    break;
-                                }
-                            }
+                        if !raw_rows.is_empty() {
+                            batches.push(RowBatch {
+                                table: "cloud_bench_raw".to_string(),
+                                rows: raw_rows,
+                            });
+                            warnings
+                                .push(Warning::info(format!("Used SQLite fallback: {db_path}",)));
+                            break;
                         }
                     }
                 }

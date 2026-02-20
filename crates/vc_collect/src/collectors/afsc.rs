@@ -122,13 +122,13 @@ pub struct AfscCollector;
 
 impl AfscCollector {
     /// Create a new afsc collector
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 
     /// Parse JSONL output into records
     fn parse_jsonl<T: for<'de> Deserialize<'de>>(
-        &self,
         output: &str,
         warnings: &mut Vec<Warning>,
     ) -> Vec<T> {
@@ -142,9 +142,8 @@ impl AfscCollector {
                 Ok(record) => records.push(record),
                 Err(e) => {
                     warnings.push(Warning::warn(format!(
-                        "Failed to parse line {}: {}",
+                        "Failed to parse line {}: {e}",
                         line_num + 1,
-                        e
                     )));
                 }
             }
@@ -177,6 +176,7 @@ impl Collector for AfscCollector {
         true // Uses time-bounded incremental window
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
@@ -220,13 +220,13 @@ impl Collector for AfscCollector {
                 }
                 Err(e) => {
                     warnings.push(
-                        Warning::error(format!("Failed to parse afsc status: {}", e))
+                        Warning::error(format!("Failed to parse afsc status: {e}"))
                             .with_context(output.chars().take(500).collect::<String>()),
                     );
                 }
             }
         } else if let Err(e) = status_result {
-            warnings.push(Warning::warn(format!("afsc status command failed: {}", e)));
+            warnings.push(Warning::warn(format!("afsc status command failed: {e}")));
         }
 
         // 2. Collect run history (with time window if cursor provided)
@@ -242,7 +242,7 @@ impl Collector for AfscCollector {
         let list_result = ctx.executor.run_timeout(&list_cmd, ctx.timeout).await;
 
         if let Ok(output) = list_result {
-            let runs: Vec<AfscRunRecord> = self.parse_jsonl(&output, &mut warnings);
+            let runs: Vec<AfscRunRecord> = Self::parse_jsonl(&output, &mut warnings);
 
             let run_rows: Vec<serde_json::Value> = runs
                 .iter()
@@ -270,7 +270,7 @@ impl Collector for AfscCollector {
                 });
             }
         } else if let Err(e) = list_result {
-            warnings.push(Warning::warn(format!("afsc list command failed: {}", e)));
+            warnings.push(Warning::warn(format!("afsc list command failed: {e}")));
         }
 
         // 3. Collect validation events
@@ -283,7 +283,7 @@ impl Collector for AfscCollector {
             .await;
 
         if let Ok(output) = validate_result {
-            let events: Vec<AfscEvent> = self.parse_jsonl(&output, &mut warnings);
+            let events: Vec<AfscEvent> = Self::parse_jsonl(&output, &mut warnings);
 
             let event_rows: Vec<serde_json::Value> = events
                 .iter()
@@ -308,10 +308,7 @@ impl Collector for AfscCollector {
                 });
             }
         } else if let Err(e) = validate_result {
-            warnings.push(Warning::warn(format!(
-                "afsc validate command failed: {}",
-                e
-            )));
+            warnings.push(Warning::warn(format!("afsc validate command failed: {e}")));
         }
 
         // 4. Collect error clusters
@@ -324,7 +321,7 @@ impl Collector for AfscCollector {
             .await;
 
         if let Ok(output) = classify_result {
-            let clusters: Vec<AfscErrorCluster> = self.parse_jsonl(&output, &mut warnings);
+            let clusters: Vec<AfscErrorCluster> = Self::parse_jsonl(&output, &mut warnings);
 
             let cluster_rows: Vec<serde_json::Value> = clusters
                 .iter()
@@ -350,17 +347,16 @@ impl Collector for AfscCollector {
             }
         } else if let Err(e) = classify_result {
             warnings.push(Warning::warn(format!(
-                "afsc classify-error command failed: {}",
-                e
+                "afsc classify-error command failed: {e}"
             )));
         }
 
         // Build result with cursor for incremental collection
         // Use the current collection time as the cursor for the next run
-        let new_cursor = if !batches.is_empty() {
-            Some(Cursor::now())
-        } else {
+        let new_cursor = if batches.is_empty() {
             None
+        } else {
+            Some(Cursor::now())
         };
 
         let success = !batches.is_empty()
@@ -495,7 +491,6 @@ mod tests {
 
     #[test]
     fn test_parse_jsonl() {
-        let collector = AfscCollector::new();
         let mut warnings = Vec::new();
 
         let jsonl = r#"{"run_id": "1", "timestamp": "2026-01-29T10:00:00Z", "status": "success"}
@@ -503,7 +498,7 @@ mod tests {
 invalid json line
 {"run_id": "3", "timestamp": "2026-01-29T12:00:00Z", "status": "success"}"#;
 
-        let records: Vec<AfscRunRecord> = collector.parse_jsonl(jsonl, &mut warnings);
+        let records: Vec<AfscRunRecord> = AfscCollector::parse_jsonl(jsonl, &mut warnings);
 
         assert_eq!(records.len(), 3);
         assert_eq!(warnings.len(), 1); // One invalid line
@@ -534,7 +529,7 @@ invalid json line
 
     #[test]
     fn test_default_impl() {
-        let collector = AfscCollector::default();
+        let collector = AfscCollector;
         assert_eq!(collector.name(), "afsc");
     }
 

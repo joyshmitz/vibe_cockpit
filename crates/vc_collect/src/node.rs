@@ -25,7 +25,7 @@ pub struct BundleManifest {
     pub schema_version: u32,
     /// Individual batch entries in the bundle
     pub batches: Vec<BatchEntry>,
-    /// Content hash of all batches (hex-encoded SipHash)
+    /// Content hash of all batches (hex-encoded `SipHash`)
     pub content_hash: String,
     /// Total payload size in bytes
     pub total_bytes: u64,
@@ -38,7 +38,7 @@ pub struct BatchEntry {
     pub collector: String,
     /// Number of rows in the batch
     pub row_count: usize,
-    /// Content hash of this batch (hex-encoded SipHash)
+    /// Content hash of this batch (hex-encoded `SipHash`)
     pub batch_hash: String,
     /// Cursor value after this batch (for incremental collection)
     pub cursor: Option<String>,
@@ -59,6 +59,7 @@ pub struct DedupKey {
 }
 
 impl DedupKey {
+    #[must_use]
     pub fn new(machine_id: &str, collector: &str, payload: &str) -> Self {
         Self {
             machine_id: machine_id.to_string(),
@@ -88,7 +89,7 @@ impl Default for SpoolConfig {
         Self {
             spool_dir: "/var/lib/vc-node/spool".to_string(),
             max_spool_bytes: 100 * 1024 * 1024, // 100 MB
-            max_age_secs: 7 * 24 * 3600,         // 7 days
+            max_age_secs: 7 * 24 * 3600,        // 7 days
         }
     }
 }
@@ -104,6 +105,7 @@ pub struct BundleBuilder {
 }
 
 impl BundleBuilder {
+    #[must_use]
     pub fn new(machine_id: &str) -> Self {
         Self {
             machine_id: machine_id.to_string(),
@@ -133,13 +135,10 @@ impl BundleBuilder {
     }
 
     /// Build the final bundle manifest
+    #[must_use]
     pub fn build(self) -> BundleManifest {
         let now = Utc::now();
-        let bundle_id = format!(
-            "bundle-{}-{}",
-            self.machine_id,
-            now.timestamp_millis()
-        );
+        let bundle_id = format!("bundle-{}-{}", self.machine_id, now.timestamp_millis());
 
         // Compute total bytes and content hash
         let mut total_bytes = 0u64;
@@ -178,6 +177,10 @@ pub struct IngestResult {
 }
 
 /// Ingest a bundle into the store, deduplicating by content hash
+///
+/// # Errors
+///
+/// Returns [`vc_store::StoreError`] when dedup checks, row insertion, or ingest recording fails.
 pub fn ingest_bundle(
     store: &vc_store::VcStore,
     manifest: &BundleManifest,
@@ -186,11 +189,7 @@ pub fn ingest_bundle(
     let mut rows_deduplicated = 0;
 
     for batch in &manifest.batches {
-        let dedup_key = DedupKey::new(
-            &manifest.machine_id,
-            &batch.collector,
-            &batch.batch_hash,
-        );
+        let dedup_key = DedupKey::new(&manifest.machine_id, &batch.collector, &batch.batch_hash);
 
         // Check if this batch was already ingested
         if store.has_ingest_record(&dedup_key.payload_hash)? {
@@ -243,7 +242,7 @@ fn collector_to_table(collector: &str) -> String {
 // Helpers
 // ============================================================================
 
-/// Compute a hex-encoded SipHash of content
+/// Compute a hex-encoded `SipHash` of content
 fn hash_content(content: &str) -> String {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);

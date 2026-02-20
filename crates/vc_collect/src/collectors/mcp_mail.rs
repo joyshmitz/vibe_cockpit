@@ -1,10 +1,10 @@
 //! MCP Agent Mail collector - agent coordination data
 //!
-//! This collector uses the SQLite Incremental ingestion pattern to collect
-//! messages and file reservations from the mcp_agent_mail SQLite database.
+//! This collector uses the `SQLite` Incremental ingestion pattern to collect
+//! messages and file reservations from the `mcp_agent_mail` `SQLite` database.
 //!
 //! ## Integration Method
-//! Direct SQLite queries on `~/.mcp_agent_mail_git_mailbox_repo/storage.sqlite3`
+//! Direct `SQLite` queries on `~/.mcp_agent_mail_git_mailbox_repo/storage.sqlite3`
 //!
 //! ## Tables Populated
 //! - `mail_messages`: Messages between agents (incremental)
@@ -15,21 +15,22 @@ use std::time::Instant;
 
 use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
 
-/// Default path to the agent mail SQLite database
+/// Default path to the agent mail `SQLite` database
 pub const DEFAULT_DB_PATH: &str = "~/.mcp_agent_mail_git_mailbox_repo/storage.sqlite3";
 
 /// MCP Agent Mail collector
 ///
-/// Collects messages and file reservations from the mcp_agent_mail
-/// coordination system's SQLite database using incremental primary key
+/// Collects messages and file reservations from the `mcp_agent_mail`
+/// coordination system's `SQLite` database using incremental primary key
 /// pattern for messages and snapshot pattern for file reservations.
 pub struct AgentMailCollector {
-    /// Path to the SQLite database (with ~ expansion)
+    /// Path to the `SQLite` database (with ~ expansion)
     db_path: String,
 }
 
 impl AgentMailCollector {
     /// Create a new collector with the default database path
+    #[must_use]
     pub fn new() -> Self {
         Self {
             db_path: DEFAULT_DB_PATH.to_string(),
@@ -45,10 +46,10 @@ impl AgentMailCollector {
 
     /// Expand ~ to home directory in the path
     fn expand_path(&self) -> String {
-        if self.db_path.starts_with("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                return self.db_path.replacen("~", &home, 1);
-            }
+        if self.db_path.starts_with("~/")
+            && let Ok(home) = std::env::var("HOME")
+        {
+            return self.db_path.replacen('~', &home, 1);
         }
         self.db_path.clone()
     }
@@ -78,6 +79,7 @@ impl Collector for AgentMailCollector {
         true
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
@@ -92,8 +94,7 @@ impl Collector for AgentMailCollector {
         if !ctx.executor.file_exists(&db_path, ctx.timeout).await? {
             // Database doesn't exist yet - this is not an error, just no data
             warnings.push(Warning::info(format!(
-                "Agent mail database not found: {}",
-                db_path
+                "Agent mail database not found: {db_path}",
             )));
             return Ok(CollectResult::empty()
                 .with_warning(Warning::info("Database file not found"))
@@ -171,8 +172,7 @@ impl Collector for AgentMailCollector {
             .unwrap_or_else(|e| {
                 // File reservations table might not exist in older versions
                 warnings.push(Warning::warn(format!(
-                    "Could not query file_reservations: {}",
-                    e
+                    "Could not query file_reservations: {e}",
                 )));
                 vec![]
             });

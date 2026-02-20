@@ -1,8 +1,8 @@
-//! vc_collect - Data collectors for Vibe Cockpit
+//! `vc_collect` - Data collectors for Vibe Cockpit
 //!
 //! This crate provides:
-//! - The Collector trait for implementing data sources
-//! - Built-in collectors for various tools (sysmoni, ru, caut, etc.)
+//! - The `Collector` trait for implementing data sources
+//! - Built-in collectors for various tools (`sysmoni`, `ru`, `caut`, etc.)
 //! - Execution context and result handling
 //! - Cursor management for incremental collection
 //!
@@ -86,7 +86,7 @@ pub enum Cursor {
     Timestamp(DateTime<Utc>),
 
     /// For JSONL tail (inode + byte offset)
-    /// Used by: mcp_agent_mail, bv/br
+    /// Used by: `mcp_agent_mail`, `bv`/`br`
     FileOffset {
         /// File inode for rotation detection
         inode: u64,
@@ -94,8 +94,8 @@ pub enum Cursor {
         offset: u64,
     },
 
-    /// For SQLite incremental (last seen primary key)
-    /// Used by: cass, caam, mcp_agent_mail
+    /// For `SQLite` incremental (last seen primary key)
+    /// Used by: `cass`, `caam`, `mcp_agent_mail`
     PrimaryKey(i64),
 
     /// For custom cursor formats (JSON-encoded string)
@@ -105,26 +105,34 @@ pub enum Cursor {
 
 impl Cursor {
     /// Create a timestamp cursor from now
+    #[must_use]
     pub fn now() -> Self {
         Self::Timestamp(Utc::now())
     }
 
     /// Create a file offset cursor
+    #[must_use]
     pub fn file_offset(inode: u64, offset: u64) -> Self {
         Self::FileOffset { inode, offset }
     }
 
     /// Create a primary key cursor
+    #[must_use]
     pub fn primary_key(pk: i64) -> Self {
         Self::PrimaryKey(pk)
     }
 
     /// Create an opaque cursor from any serializable value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `value` fails to serialize to JSON.
     pub fn opaque<T: Serialize>(value: &T) -> Result<Self, serde_json::Error> {
         Ok(Self::Opaque(serde_json::to_string(value)?))
     }
 
     /// Parse an opaque cursor into a typed value
+    #[must_use]
     pub fn parse_opaque<T: for<'de> Deserialize<'de>>(&self) -> Option<T> {
         match self {
             Self::Opaque(s) => serde_json::from_str(s).ok(),
@@ -133,11 +141,19 @@ impl Cursor {
     }
 
     /// Convert to JSON string for storage
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
 
     /// Parse from JSON string
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` is not valid JSON for `Cursor`.
     pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(s)
     }
@@ -209,6 +225,7 @@ impl Warning {
     }
 
     /// Add context to this warning
+    #[must_use]
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
@@ -241,6 +258,7 @@ mod duration_serde {
 
 impl CollectResult {
     /// Create a successful empty result
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             rows: vec![],
@@ -254,6 +272,7 @@ impl CollectResult {
     }
 
     /// Create a failed result
+    #[must_use]
     pub fn failed(error: impl Into<String>) -> Self {
         Self {
             rows: vec![],
@@ -267,6 +286,7 @@ impl CollectResult {
     }
 
     /// Create a successful result with rows
+    #[must_use]
     pub fn with_rows(rows: Vec<RowBatch>) -> Self {
         Self {
             rows,
@@ -280,40 +300,47 @@ impl CollectResult {
     }
 
     /// Set the cursor for this result
+    #[must_use]
     pub fn with_cursor(mut self, cursor: Cursor) -> Self {
         self.new_cursor = Some(cursor);
         self
     }
 
     /// Set the duration for this result
+    #[must_use]
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = duration;
         self
     }
 
     /// Add a warning to this result
+    #[must_use]
     pub fn with_warning(mut self, warning: Warning) -> Self {
         self.warnings.push(warning);
         self
     }
 
     /// Add a raw artifact to this result
+    #[must_use]
     pub fn with_artifact(mut self, artifact: RawArtifact) -> Self {
         self.raw_artifacts.push(artifact);
         self
     }
 
     /// Total number of rows collected
+    #[must_use]
     pub fn total_rows(&self) -> usize {
         self.rows.iter().map(|b| b.rows.len()).sum()
     }
 
     /// Get the number of tables with data
+    #[must_use]
     pub fn table_count(&self) -> usize {
         self.rows.len()
     }
 
     /// Check if any warnings were generated
+    #[must_use]
     pub fn has_warnings(&self) -> bool {
         !self.warnings.is_empty()
     }
@@ -381,9 +408,10 @@ impl CollectContext {
     pub const DEFAULT_MAX_ROWS: usize = 10_000;
 
     /// Default poll window (10 minutes)
-    pub const DEFAULT_POLL_WINDOW: Duration = Duration::from_secs(600);
+    pub const DEFAULT_POLL_WINDOW: Duration = Duration::from_mins(10);
 
     /// Create a new context for local collection
+    #[must_use]
     pub fn local(machine_id: impl Into<String>, timeout: Duration) -> Self {
         Self {
             machine_id: machine_id.into(),
@@ -399,6 +427,7 @@ impl CollectContext {
     }
 
     /// Create a new context for remote collection
+    #[must_use]
     pub fn remote(
         machine_id: impl Into<String>,
         timeout: Duration,
@@ -418,30 +447,35 @@ impl CollectContext {
     }
 
     /// Set the cursor for this context
+    #[must_use]
     pub fn with_cursor(mut self, cursor: Cursor) -> Self {
         self.cursor = Some(cursor);
         self
     }
 
     /// Set the poll window for this context
+    #[must_use]
     pub fn with_poll_window(mut self, window: Duration) -> Self {
         self.poll_window = window;
         self
     }
 
     /// Set max bytes for this context
+    #[must_use]
     pub fn with_max_bytes(mut self, max: usize) -> Self {
         self.max_bytes = max;
         self
     }
 
     /// Set max rows for this context
+    #[must_use]
     pub fn with_max_rows(mut self, max: usize) -> Self {
         self.max_rows = max;
         self
     }
 
     /// Get the timestamp cursor if present
+    #[must_use]
     pub fn timestamp_cursor(&self) -> Option<DateTime<Utc>> {
         match &self.cursor {
             Some(Cursor::Timestamp(ts)) => Some(*ts),
@@ -450,6 +484,7 @@ impl CollectContext {
     }
 
     /// Get the file offset cursor if present
+    #[must_use]
     pub fn file_offset_cursor(&self) -> Option<(u64, u64)> {
         match &self.cursor {
             Some(Cursor::FileOffset { inode, offset }) => Some((*inode, *offset)),
@@ -458,6 +493,7 @@ impl CollectContext {
     }
 
     /// Get the primary key cursor if present
+    #[must_use]
     pub fn primary_key_cursor(&self) -> Option<i64> {
         match &self.cursor {
             Some(Cursor::PrimaryKey(pk)) => Some(*pk),
@@ -508,6 +544,7 @@ pub struct CollectorRegistry {
 
 impl CollectorRegistry {
     /// Create a new empty registry
+    #[must_use]
     pub fn new() -> Self {
         Self {
             collectors: HashMap::new(),
@@ -527,21 +564,25 @@ impl CollectorRegistry {
     }
 
     /// Get a collector by name
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn Collector>> {
         self.collectors.get(name).cloned()
     }
 
     /// List all registered collector names
+    #[must_use]
     pub fn names(&self) -> Vec<&str> {
-        self.collectors.keys().map(|s| s.as_str()).collect()
+        self.collectors.keys().map(String::as_str).collect()
     }
 
     /// Get the count of registered collectors
+    #[must_use]
     pub fn len(&self) -> usize {
         self.collectors.len()
     }
 
     /// Check if the registry is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.collectors.is_empty()
     }
@@ -552,6 +593,7 @@ impl CollectorRegistry {
     }
 
     /// Create registry with all built-in collectors
+    #[must_use]
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
         // Always-on baseline collector

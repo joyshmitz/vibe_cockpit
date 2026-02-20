@@ -2,7 +2,7 @@
 //!
 //! This module provides the `Executor` abstraction for running commands
 //! both locally and remotely via SSH. It also provides file operations
-//! and SQLite query support.
+//! and `SQLite` query support.
 
 use crate::CollectError;
 use chrono::{DateTime, Utc};
@@ -34,6 +34,7 @@ pub struct SshConfig {
 
 impl SshConfig {
     /// Create SSH config with default port
+    #[must_use]
     pub fn new(user: impl Into<String>, host: impl Into<String>) -> Self {
         Self {
             host: host.into(),
@@ -44,18 +45,21 @@ impl SshConfig {
     }
 
     /// Set the SSH key path
+    #[must_use]
     pub fn with_key(mut self, path: impl Into<String>) -> Self {
         self.key_path = Some(path.into());
         self
     }
 
     /// Set the SSH port
+    #[must_use]
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
 
     /// Parse from "user@host:port" format
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         if s == "local" {
             return None;
@@ -87,6 +91,7 @@ pub struct CommandOutput {
 
 impl CommandOutput {
     /// Check if the command succeeded (exit code 0)
+    #[must_use]
     pub fn success(&self) -> bool {
         self.exit_code == 0
     }
@@ -107,11 +112,13 @@ pub struct FileStat {
 
 impl Executor {
     /// Create a local executor
+    #[must_use]
     pub fn local() -> Self {
         Self { ssh_config: None }
     }
 
     /// Create a remote executor with SSH config
+    #[must_use]
     pub fn remote(config: SshConfig) -> Self {
         Self {
             ssh_config: Some(config),
@@ -119,11 +126,16 @@ impl Executor {
     }
 
     /// Check if this is a local executor
+    #[must_use]
     pub fn is_local(&self) -> bool {
         self.ssh_config.is_none()
     }
 
     /// Check if a tool is available
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] only if command execution fails before producing output.
     #[instrument(skip(self))]
     pub async fn check_tool(&self, tool: &str) -> Result<bool, CollectError> {
         let cmd = format!("command -v {tool}");
@@ -134,6 +146,10 @@ impl Executor {
     }
 
     /// Run a command with timeout
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when command execution fails or times out.
     #[instrument(skip(self))]
     pub async fn run(&self, cmd: &str, timeout: Duration) -> Result<CommandOutput, CollectError> {
         let output = match &self.ssh_config {
@@ -144,6 +160,10 @@ impl Executor {
     }
 
     /// Run a command with timeout, returning stdout on success
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when execution fails, times out, or the command exits non-zero.
     pub async fn run_timeout(&self, cmd: &str, timeout: Duration) -> Result<String, CollectError> {
         let output = self.run(cmd, timeout).await?;
         if output.exit_code != 0 {
@@ -156,6 +176,10 @@ impl Executor {
     }
 
     /// Read an entire file
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when the file cannot be read or is missing.
     #[instrument(skip(self))]
     pub async fn read_file(&self, path: &str, timeout: Duration) -> Result<Vec<u8>, CollectError> {
         let cmd = format!("cat {}", shell_escape(path));
@@ -170,6 +194,10 @@ impl Executor {
     }
 
     /// Read a file from a byte offset to the end (for JSONL tail)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when the file cannot be read or is missing.
     #[instrument(skip(self))]
     pub async fn read_file_range(
         &self,
@@ -191,6 +219,10 @@ impl Executor {
     }
 
     /// Get file stat information (inode, size, mtime)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when stat output cannot be parsed or execution fails.
     #[instrument(skip(self))]
     pub async fn stat(&self, path: &str, timeout: Duration) -> Result<FileStat, CollectError> {
         // Use stat command with format for inode, size, mtime
@@ -213,7 +245,7 @@ impl Executor {
             });
         }
 
-        let parts: Vec<&str> = output.stdout.trim().split_whitespace().collect();
+        let parts: Vec<&str> = output.stdout.split_whitespace().collect();
         if parts.len() < 3 {
             warn!(output = %output.stdout, "Unexpected stat output format");
             return Err(CollectError::ParseError(
@@ -247,7 +279,11 @@ impl Executor {
         })
     }
 
-    /// Run a SQLite query and return results as JSON
+    /// Run a `SQLite` query and return results as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when query execution fails or JSON output cannot be parsed.
     #[instrument(skip(self))]
     pub async fn sqlite_query(
         &self,
@@ -281,6 +317,10 @@ impl Executor {
     }
 
     /// Perform an HTTP GET request (using curl)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when request execution fails or exits non-zero.
     #[instrument(skip(self))]
     pub async fn http_get(&self, url: &str, timeout: Duration) -> Result<String, CollectError> {
         let timeout_secs = timeout.as_secs().max(1);
@@ -299,12 +339,20 @@ impl Executor {
     }
 
     /// Check if a file exists
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when file stat cannot be retrieved.
     pub async fn file_exists(&self, path: &str, timeout: Duration) -> Result<bool, CollectError> {
         let stat = self.stat(path, timeout).await?;
         Ok(stat.exists)
     }
 
     /// Get file size in bytes
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectError`] when file stat fails or the file does not exist.
     pub async fn file_size(&self, path: &str, timeout: Duration) -> Result<u64, CollectError> {
         let stat = self.stat(path, timeout).await?;
         if !stat.exists {

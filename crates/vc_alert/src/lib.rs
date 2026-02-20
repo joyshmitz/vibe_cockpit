@@ -1,4 +1,4 @@
-//! vc_alert - Alerting system for Vibe Cockpit
+//! `vc_alert` - Alerting system for Vibe Cockpit
 //!
 //! This crate provides:
 //! - Alert rule definitions
@@ -91,6 +91,7 @@ pub enum ThresholdOp {
 }
 
 impl ThresholdOp {
+    #[must_use]
     pub fn check(&self, actual: f64, threshold: f64) -> bool {
         match self {
             ThresholdOp::Gt => actual > threshold,
@@ -118,7 +119,7 @@ pub struct Alert {
 /// Alert delivery channel trait
 #[async_trait]
 pub trait AlertChannel: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     async fn deliver(&self, alert: &Alert) -> Result<(), AlertError>;
 }
 
@@ -130,6 +131,7 @@ pub struct AlertEngine {
 
 impl AlertEngine {
     /// Create a new alert engine
+    #[must_use]
     pub fn new() -> Self {
         Self {
             rules: Self::default_rules(),
@@ -229,11 +231,13 @@ impl AlertEngine {
     }
 
     /// Get all rules
+    #[must_use]
     pub fn rules(&self) -> &[AlertRule] {
         &self.rules
     }
 
     /// Check if a rule is in cooldown
+    #[must_use]
     pub fn is_in_cooldown(&self, rule_id: &str, cooldown_secs: u64) -> bool {
         if let Some(last_fired) = self.cooldowns.get(rule_id) {
             last_fired.elapsed() < Duration::from_secs(cooldown_secs)
@@ -265,6 +269,7 @@ pub struct TuiChannel {
 
 impl TuiChannel {
     /// Create a new TUI channel with the given sender
+    #[must_use]
     pub fn new(tx: tokio::sync::mpsc::Sender<Alert>) -> Self {
         Self { tx }
     }
@@ -272,7 +277,7 @@ impl TuiChannel {
 
 #[async_trait]
 impl AlertChannel for TuiChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "tui"
     }
 
@@ -280,7 +285,7 @@ impl AlertChannel for TuiChannel {
         self.tx
             .send(alert.clone())
             .await
-            .map_err(|e| AlertError::DeliveryFailed(format!("TUI channel send failed: {}", e)))
+            .map_err(|e| AlertError::DeliveryFailed(format!("TUI channel send failed: {e}")))
     }
 }
 
@@ -310,7 +315,7 @@ impl WebhookChannel {
 
 #[async_trait]
 impl AlertChannel for WebhookChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "webhook"
     }
 
@@ -321,7 +326,7 @@ impl AlertChannel for WebhookChannel {
             .json(alert)
             .send()
             .await
-            .map_err(|e| AlertError::DeliveryFailed(format!("Webhook request failed: {}", e)))?;
+            .map_err(|e| AlertError::DeliveryFailed(format!("Webhook request failed: {e}")))?;
 
         if response.status().is_success() {
             Ok(())
@@ -341,16 +346,19 @@ pub struct LogChannel {
 
 impl LogChannel {
     /// Create a log channel at the specified level
+    #[must_use]
     pub fn new(level: tracing::Level) -> Self {
         Self { level }
     }
 
     /// Create a warning-level log channel
+    #[must_use]
     pub fn warning() -> Self {
         Self::new(tracing::Level::WARN)
     }
 
     /// Create an info-level log channel
+    #[must_use]
     pub fn info() -> Self {
         Self::new(tracing::Level::INFO)
     }
@@ -364,7 +372,7 @@ impl Default for LogChannel {
 
 #[async_trait]
 impl AlertChannel for LogChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "log"
     }
 
@@ -410,21 +418,36 @@ pub struct MemoryChannel {
 
 impl MemoryChannel {
     /// Create a new memory channel
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get all alerts that have been delivered
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
+    #[must_use]
     pub fn alerts(&self) -> Vec<Alert> {
         self.alerts.lock().unwrap().clone()
     }
 
     /// Clear all stored alerts
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn clear(&self) {
         self.alerts.lock().unwrap().clear();
     }
 
     /// Get count of stored alerts
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
+    #[must_use]
     pub fn count(&self) -> usize {
         self.alerts.lock().unwrap().len()
     }
@@ -432,7 +455,7 @@ impl MemoryChannel {
 
 #[async_trait]
 impl AlertChannel for MemoryChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "memory"
     }
 
@@ -462,7 +485,7 @@ impl SlackChannel {
         }
     }
 
-    fn severity_color(severity: &Severity) -> &'static str {
+    fn severity_color(severity: Severity) -> &'static str {
         match severity {
             Severity::Info => "#36a64f",
             Severity::Warning => "#daa038",
@@ -470,7 +493,7 @@ impl SlackChannel {
         }
     }
 
-    fn severity_emoji(severity: &Severity) -> &'static str {
+    fn severity_emoji(severity: Severity) -> &'static str {
         match severity {
             Severity::Info => ":information_source:",
             Severity::Warning => ":warning:",
@@ -481,7 +504,7 @@ impl SlackChannel {
 
 #[async_trait]
 impl AlertChannel for SlackChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "slack"
     }
 
@@ -492,13 +515,13 @@ impl AlertChannel for SlackChannel {
 
         let payload = serde_json::json!({
             "attachments": [{
-                "color": Self::severity_color(&alert.severity),
+                "color": Self::severity_color(alert.severity),
                 "blocks": [
                     {
                         "type": "header",
                         "text": {
                             "type": "plain_text",
-                            "text": format!("{} {}", Self::severity_emoji(&alert.severity), alert.title),
+                            "text": format!("{} {}", Self::severity_emoji(alert.severity), alert.title),
                         }
                     },
                     {
@@ -560,7 +583,7 @@ impl DiscordChannel {
         }
     }
 
-    fn severity_color_int(severity: &Severity) -> u32 {
+    fn severity_color_int(severity: Severity) -> u32 {
         match severity {
             Severity::Info => 0x36_a6_4f,
             Severity::Warning => 0xda_a0_38,
@@ -571,7 +594,7 @@ impl DiscordChannel {
 
 #[async_trait]
 impl AlertChannel for DiscordChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "discord"
     }
 
@@ -584,7 +607,7 @@ impl AlertChannel for DiscordChannel {
             "embeds": [{
                 "title": alert.title,
                 "description": alert.message,
-                "color": Self::severity_color_int(&alert.severity),
+                "color": Self::severity_color_int(alert.severity),
                 "fields": [
                     {"name": "Severity", "value": format!("{:?}", alert.severity), "inline": true},
                     {"name": "Rule", "value": &alert.rule_id, "inline": true},
@@ -623,6 +646,7 @@ pub struct DesktopChannel {
 }
 
 impl DesktopChannel {
+    #[must_use]
     pub fn new(min_severity: Severity) -> Self {
         Self { min_severity }
     }
@@ -630,7 +654,7 @@ impl DesktopChannel {
 
 #[async_trait]
 impl AlertChannel for DesktopChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "desktop"
     }
 
@@ -696,6 +720,7 @@ pub struct ChannelManager {
 }
 
 impl ChannelManager {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),
@@ -723,6 +748,7 @@ impl ChannelManager {
     }
 
     /// Number of registered channels
+    #[must_use]
     pub fn channel_count(&self) -> usize {
         self.channels.len()
     }
@@ -754,12 +780,14 @@ impl Alert {
     }
 
     /// Set the machine ID
+    #[must_use]
     pub fn with_machine_id(mut self, machine_id: impl Into<String>) -> Self {
         self.machine_id = Some(machine_id.into());
         self
     }
 
     /// Set the context
+    #[must_use]
     pub fn with_context(mut self, context: serde_json::Value) -> Self {
         self.context = context;
         self
@@ -777,7 +805,7 @@ mod tests {
 
         #[async_trait]
         impl AlertChannel for Channel {
-            fn name(&self) -> &str;
+            fn name(&self) -> &'static str;
             async fn deliver(&self, alert: &Alert) -> Result<(), AlertError>;
         }
     }
@@ -864,7 +892,7 @@ mod tests {
     #[test]
     fn test_threshold_op_edge_cases() {
         // Very small differences
-        assert!(!ThresholdOp::Eq.check(0.0000001, 0.0));
+        assert!(!ThresholdOp::Eq.check(0.000_000_1, 0.0));
 
         // Negative numbers
         assert!(ThresholdOp::Lt.check(-10.0, -5.0));
@@ -1078,13 +1106,13 @@ mod tests {
     #[test]
     fn test_alert_error_display() {
         let err = AlertError::RuleNotFound("missing-rule".to_string());
-        assert_eq!(format!("{}", err), "Rule not found: missing-rule");
+        assert_eq!(format!("{err}"), "Rule not found: missing-rule");
 
         let err = AlertError::EvaluationFailed("query timeout".to_string());
-        assert_eq!(format!("{}", err), "Evaluation failed: query timeout");
+        assert_eq!(format!("{err}"), "Evaluation failed: query timeout");
 
         let err = AlertError::DeliveryFailed("webhook unreachable".to_string());
-        assert_eq!(format!("{}", err), "Delivery failed: webhook unreachable");
+        assert_eq!(format!("{err}"), "Delivery failed: webhook unreachable");
     }
 
     // ==========================================================================
@@ -1153,7 +1181,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_channel_deliver() {
         let mut mock = MockChannel::new();
-        mock.expect_name().return_const("mock".to_string());
+        mock.expect_name().return_const("mock");
         mock.expect_deliver().returning(|_| Ok(()));
 
         let alert = Alert {
@@ -1174,8 +1202,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_channel_delivery_failure() {
         let mut mock = MockChannel::new();
-        mock.expect_name()
-            .return_const("failing-channel".to_string());
+        mock.expect_name().return_const("failing-channel");
         mock.expect_deliver()
             .returning(|_| Err(AlertError::DeliveryFailed("connection refused".to_string())));
 
@@ -1483,23 +1510,20 @@ mod tests {
 
     #[test]
     fn test_slack_severity_color() {
-        assert_eq!(SlackChannel::severity_color(&Severity::Info), "#36a64f");
-        assert_eq!(SlackChannel::severity_color(&Severity::Warning), "#daa038");
-        assert_eq!(SlackChannel::severity_color(&Severity::Critical), "#d50000");
+        assert_eq!(SlackChannel::severity_color(Severity::Info), "#36a64f");
+        assert_eq!(SlackChannel::severity_color(Severity::Warning), "#daa038");
+        assert_eq!(SlackChannel::severity_color(Severity::Critical), "#d50000");
     }
 
     #[test]
     fn test_slack_severity_emoji() {
         assert_eq!(
-            SlackChannel::severity_emoji(&Severity::Info),
+            SlackChannel::severity_emoji(Severity::Info),
             ":information_source:"
         );
+        assert_eq!(SlackChannel::severity_emoji(Severity::Warning), ":warning:");
         assert_eq!(
-            SlackChannel::severity_emoji(&Severity::Warning),
-            ":warning:"
-        );
-        assert_eq!(
-            SlackChannel::severity_emoji(&Severity::Critical),
+            SlackChannel::severity_emoji(Severity::Critical),
             ":rotating_light:"
         );
     }
@@ -1554,16 +1578,16 @@ mod tests {
     #[test]
     fn test_discord_severity_color_int() {
         assert_eq!(
-            DiscordChannel::severity_color_int(&Severity::Info),
-            0x36a64f
+            DiscordChannel::severity_color_int(Severity::Info),
+            0x0036_a64f
         );
         assert_eq!(
-            DiscordChannel::severity_color_int(&Severity::Warning),
-            0xdaa038
+            DiscordChannel::severity_color_int(Severity::Warning),
+            0x00da_a038
         );
         assert_eq!(
-            DiscordChannel::severity_color_int(&Severity::Critical),
-            0xd50000
+            DiscordChannel::severity_color_int(Severity::Critical),
+            0x00d5_0000
         );
     }
 
@@ -1684,7 +1708,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_channel_manager_deliver_all() {
-        let memory = std::sync::Arc::new(MemoryChannel::new());
         let mut manager = ChannelManager::new();
         manager.add_channel(Box::new(MemoryChannel::new()));
         manager.add_channel(Box::new(LogChannel::info()));
@@ -1714,7 +1737,7 @@ mod tests {
 
         // Add a mock channel that fails
         let mut mock = MockChannel::new();
-        mock.expect_name().return_const("failing".to_string());
+        mock.expect_name().return_const("failing");
         mock.expect_deliver()
             .returning(|_| Err(AlertError::DeliveryFailed("network error".to_string())));
         manager.add_channel(Box::new(mock));

@@ -31,6 +31,7 @@
 //! This enables fleet-wide queries while maintaining data provenance.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -93,13 +94,15 @@ pub struct MachineCollectResult {
 
 impl MachineCollectResult {
     /// Check if collection succeeded
+    #[must_use]
     pub fn success(&self) -> bool {
         self.result.as_ref().is_ok_and(|r| r.success)
     }
 
     /// Get total rows collected (0 if failed)
+    #[must_use]
     pub fn total_rows(&self) -> usize {
-        self.result.as_ref().map(|r| r.total_rows()).unwrap_or(0)
+        self.result.as_ref().map_or(0, CollectResult::total_rows)
     }
 }
 
@@ -124,6 +127,7 @@ pub struct CollectionSummary {
 
 impl CollectionSummary {
     /// Create a new empty summary
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -145,11 +149,14 @@ impl CollectionSummary {
     }
 
     /// Get success rate as a percentage
+    #[must_use]
     pub fn success_rate(&self) -> f64 {
         if self.machines_attempted == 0 {
             0.0
         } else {
-            (self.machines_succeeded as f64 / self.machines_attempted as f64) * 100.0
+            let succeeded = u32::try_from(self.machines_succeeded).unwrap_or(u32::MAX);
+            let attempted = u32::try_from(self.machines_attempted).unwrap_or(u32::MAX);
+            (f64::from(succeeded) / f64::from(attempted)) * 100.0
         }
     }
 }
@@ -172,11 +179,11 @@ pub struct RemoteCollectorConfig {
 impl Default for RemoteCollectorConfig {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_mins(1),
             max_concurrent: 4,
             skip_offline: true,
             check_tools: true,
-            poll_window: Duration::from_secs(600),
+            poll_window: Duration::from_mins(10),
         }
     }
 }
@@ -187,7 +194,7 @@ impl Default for RemoteCollectorConfig {
 /// - Builds the appropriate command for the collector
 /// - Executes it over SSH
 /// - Parses the JSON output
-/// - Tags all results with the machine_id
+/// - Tags all results with the `machine_id`
 pub struct RemoteCollector<C: Collector> {
     inner: C,
     ssh: Arc<SshRunner>,
@@ -196,6 +203,7 @@ pub struct RemoteCollector<C: Collector> {
 
 impl<C: Collector> RemoteCollector<C> {
     /// Create a new remote collector wrapper
+    #[must_use]
     pub fn new(inner: C, ssh: Arc<SshRunner>) -> Self {
         Self {
             inner,
@@ -205,6 +213,7 @@ impl<C: Collector> RemoteCollector<C> {
     }
 
     /// Create with custom configuration
+    #[must_use]
     pub fn with_config(inner: C, ssh: Arc<SshRunner>, config: RemoteCollectorConfig) -> Self {
         Self { inner, ssh, config }
     }
@@ -215,6 +224,11 @@ impl<C: Collector> RemoteCollector<C> {
     }
 
     /// Execute collection on a remote machine
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RemoteCollectError`] when SSH configuration is missing, remote execution fails,
+    /// or the collector output cannot be parsed.
     #[instrument(skip(self, machine, cursor), fields(
         collector = %self.inner.name(),
         machine_id = %machine.machine_id
@@ -271,22 +285,24 @@ impl<C: Collector> RemoteCollector<C> {
     fn build_command(&self, cursor: Option<&Cursor>) -> String {
         let tool = self.inner.required_tool().unwrap_or(self.inner.name());
 
-        let mut cmd = format!("{} --robot --json", tool);
+        let mut cmd = format!("{tool} --robot --json");
 
         // Add cursor argument if present
         if let Some(cursor) = cursor {
             match cursor {
                 Cursor::Timestamp(ts) => {
-                    cmd.push_str(&format!(" --since '{}'", ts.to_rfc3339()));
+                    write!(cmd, " --since '{}'", ts.to_rfc3339())
+                        .expect("writing to String cannot fail");
                 }
                 Cursor::PrimaryKey(pk) => {
-                    cmd.push_str(&format!(" --since-id {}", pk));
+                    write!(cmd, " --since-id {pk}").expect("writing to String cannot fail");
                 }
                 Cursor::FileOffset { offset, .. } => {
-                    cmd.push_str(&format!(" --offset {}", offset));
+                    write!(cmd, " --offset {offset}").expect("writing to String cannot fail");
                 }
                 Cursor::Opaque(s) => {
-                    cmd.push_str(&format!(" --cursor '{}'", s.replace('\'', "'\\''")));
+                    write!(cmd, " --cursor '{}'", s.replace('\'', "'\\''"))
+                        .expect("writing to String cannot fail");
                 }
             }
         }
@@ -294,7 +310,7 @@ impl<C: Collector> RemoteCollector<C> {
         cmd
     }
 
-    /// Tag all rows with machine_id
+    /// Tag all rows with `machine_id`.
     fn tag_rows_with_machine(result: &mut CollectResult, machine_id: &str) {
         for batch in &mut result.rows {
             for row in &mut batch.rows {
@@ -314,7 +330,7 @@ impl<C: Collector> RemoteCollector<C> {
 /// This collector:
 /// - Discovers machines that have the required tool
 /// - Collects from all machines in parallel (bounded concurrency)
-/// - Aggregates results with machine_id tagging
+/// - Aggregates results with `machine_id` tagging
 /// - Handles failures gracefully (continues with other machines)
 pub struct MultiMachineCollector {
     ssh: Arc<SshRunner>,
@@ -326,6 +342,7 @@ pub struct MultiMachineCollector {
 
 impl MultiMachineCollector {
     /// Create a new multi-machine collector
+    #[must_use]
     pub fn new(ssh: Arc<SshRunner>, registry: Arc<MachineRegistry>) -> Self {
         Self {
             ssh,
@@ -336,6 +353,7 @@ impl MultiMachineCollector {
     }
 
     /// Create with custom configuration
+    #[must_use]
     pub fn with_config(
         ssh: Arc<SshRunner>,
         registry: Arc<MachineRegistry>,
@@ -356,6 +374,7 @@ impl MultiMachineCollector {
     }
 
     /// Get cursor for a specific (collector, machine) pair
+    #[must_use]
     pub fn get_cursor(&self, collector: &str, machine_id: &str) -> Option<&Cursor> {
         self.cursors
             .get(&(collector.to_string(), machine_id.to_string()))
@@ -578,9 +597,10 @@ impl MultiMachineCollector {
         summary
     }
 
-    /// Aggregate results from multiple machines into a single CollectResult
+    /// Aggregate results from multiple machines into a single `CollectResult`.
     ///
     /// This merges all row batches and combines warnings/cursors.
+    #[must_use]
     pub fn aggregate_results(results: &[MachineCollectResult]) -> CollectResult {
         let mut all_rows: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
         let mut all_warnings: Vec<Warning> = Vec::new();
@@ -607,10 +627,10 @@ impl MultiMachineCollector {
                     all_warnings.extend(result.warnings.clone());
                 }
                 Err(e) => {
-                    errors.push(format!("{}: {}", mcr.machine_id, e));
+                    errors.push(format!("{}: {e}", mcr.machine_id));
                     all_warnings.push(Warning::error(format!(
-                        "Collection failed on {}: {}",
-                        mcr.machine_id, e
+                        "Collection failed on {}: {e}",
+                        mcr.machine_id
                     )));
                 }
             }
@@ -648,7 +668,7 @@ mod tests {
     #[test]
     fn test_remote_collector_config_default() {
         let config = RemoteCollectorConfig::default();
-        assert_eq!(config.timeout, Duration::from_secs(60));
+        assert_eq!(config.timeout, Duration::from_mins(1));
         assert_eq!(config.max_concurrent, 4);
         assert!(config.skip_offline);
         assert!(config.check_tools);
@@ -682,7 +702,7 @@ mod tests {
         assert_eq!(summary.machines_failed, 1);
         assert_eq!(summary.machines_offline, 1);
         assert_eq!(summary.total_rows, 1);
-        assert_eq!(summary.success_rate(), 50.0);
+        assert!((summary.success_rate() - 50.0).abs() < f64::EPSILON);
     }
 
     #[test]

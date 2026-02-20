@@ -130,11 +130,13 @@ pub struct ProbeResult {
 
 impl ProbeResult {
     /// Check if the probe was successful (found at least one tool)
+    #[must_use]
     pub fn success(&self) -> bool {
         !self.found_tools.is_empty()
     }
 
     /// Get count of found tools
+    #[must_use]
     pub fn tool_count(&self) -> usize {
         self.found_tools.len()
     }
@@ -153,6 +155,7 @@ impl Default for ToolProber {
 
 impl ToolProber {
     /// Create a new tool prober with default timeout
+    #[must_use]
     pub fn new() -> Self {
         Self {
             timeout: Duration::from_secs(10),
@@ -160,6 +163,7 @@ impl ToolProber {
     }
 
     /// Set the command timeout
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -187,7 +191,7 @@ impl ToolProber {
                         "Tool found"
                     );
                     // Record in database
-                    if let Err(e) = registry.record_tool(machine_id, info.clone()) {
+                    if let Err(e) = registry.record_tool(machine_id, &info) {
                         warn!(tool = %spec.name, error = %e, "Failed to record tool");
                         errors.push((spec.name.to_string(), e.to_string()));
                     }
@@ -202,7 +206,7 @@ impl ToolProber {
                         tool_version: None,
                         is_available: false,
                     };
-                    let _ = registry.record_tool(machine_id, not_found);
+                    let _ = registry.record_tool(machine_id, &not_found);
                 }
                 Err(e) => {
                     warn!(tool = %spec.name, error = %e, "Probe error");
@@ -234,27 +238,28 @@ impl ToolProber {
         // Try each detection command
         for cmd in spec.detect_commands {
             let result = executor.run(cmd, self.timeout).await;
-            if let Ok(output) = result {
-                if output.exit_code == 0 && !output.stdout.trim().is_empty() {
-                    let path = output.stdout.trim().to_string();
+            if let Ok(output) = result
+                && output.exit_code == 0
+                && !output.stdout.trim().is_empty()
+            {
+                let path = output.stdout.trim().to_string();
 
-                    // Get version
-                    let version_cmd = format!("{} {}", path, spec.version_flag);
-                    let version = match executor.run(&version_cmd, self.timeout).await {
-                        Ok(out) if out.exit_code == 0 => {
-                            Self::extract_version(&out.stdout, spec.version_regex)
-                                .or_else(|| Self::extract_version(&out.stderr, spec.version_regex))
-                        }
-                        _ => None,
-                    };
+                // Get version
+                let version_cmd = format!("{} {}", path, spec.version_flag);
+                let version = match executor.run(&version_cmd, self.timeout).await {
+                    Ok(out) if out.exit_code == 0 => {
+                        Self::extract_version(&out.stdout, spec.version_regex)
+                            .or_else(|| Self::extract_version(&out.stderr, spec.version_regex))
+                    }
+                    _ => None,
+                };
 
-                    return Ok(Some(ToolInfo {
-                        tool_name: spec.name.to_string(),
-                        tool_path: Some(path),
-                        tool_version: version,
-                        is_available: true,
-                    }));
-                }
+                return Ok(Some(ToolInfo {
+                    tool_name: spec.name.to_string(),
+                    tool_path: Some(path),
+                    tool_version: version,
+                    is_available: true,
+                }));
             }
         }
         Ok(None)

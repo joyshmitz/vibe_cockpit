@@ -7,7 +7,7 @@
 //! - Escalation after SLA timeout
 //! - Dedup/throttle per rule
 
-use crate::{AlertError, Severity};
+use crate::Severity;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use vc_store::VcStore;
@@ -48,12 +48,13 @@ pub struct MatchCondition {
 
 impl MatchCondition {
     /// Check if this condition matches a given alert context
+    #[must_use]
     pub fn matches(&self, alert: &AlertContext) -> bool {
         // Severity check
-        if let Some(ref severities) = self.severity {
-            if !severities.contains(&alert.severity) {
-                return false;
-            }
+        if let Some(ref severities) = self.severity
+            && !severities.contains(&alert.severity)
+        {
+            return false;
         }
 
         // Machine pattern check (simple contains/glob matching)
@@ -68,10 +69,10 @@ impl MatchCondition {
         }
 
         // Alert rule pattern check
-        if let Some(ref pattern) = self.alert_rule_pattern {
-            if !simple_match(pattern, &alert.alert_rule_id) {
-                return false;
-            }
+        if let Some(ref pattern) = self.alert_rule_pattern
+            && !simple_match(pattern, &alert.alert_rule_id)
+        {
+            return false;
         }
 
         true
@@ -107,6 +108,7 @@ pub struct QuietHours {
 
 impl QuietHours {
     /// Check if an alert should be suppressed given the current hour
+    #[must_use]
     pub fn should_suppress(&self, current_hour: u8, severity: Severity) -> bool {
         if !self.enabled {
             return false;
@@ -177,6 +179,7 @@ pub enum RoutingAction {
 }
 
 impl RoutingAction {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
             Self::Sent => "sent",
@@ -202,6 +205,7 @@ pub struct RoutingEngine {
 
 impl RoutingEngine {
     /// Create a new routing engine with default configuration
+    #[must_use]
     pub fn new() -> Self {
         Self {
             rules: Vec::new(),
@@ -213,6 +217,7 @@ impl RoutingEngine {
     }
 
     /// Create with a store for audit logging
+    #[must_use]
     pub fn with_store(store: Arc<VcStore>) -> Self {
         Self {
             rules: Vec::new(),
@@ -245,23 +250,24 @@ impl RoutingEngine {
     }
 
     /// Route an alert through the rules engine
+    #[must_use]
     pub fn route(&self, alert: &AlertContext, current_hour: u8) -> RoutingDecision {
         // 1. Check quiet hours suppression
-        if let Some(ref qh) = self.quiet_hours {
-            if qh.should_suppress(current_hour, alert.severity) {
-                let decision = RoutingDecision {
-                    alert_id: alert.alert_id.clone(),
-                    matched_rule: None,
-                    action: RoutingAction::Suppressed,
-                    channels: vec![],
-                    reason: format!(
-                        "Suppressed during quiet hours ({:02}:00-{:02}:00)",
-                        qh.start_hour, qh.end_hour
-                    ),
-                };
-                self.audit_decision(&decision);
-                return decision;
-            }
+        if let Some(ref qh) = self.quiet_hours
+            && qh.should_suppress(current_hour, alert.severity)
+        {
+            let decision = RoutingDecision {
+                alert_id: alert.alert_id.clone(),
+                matched_rule: None,
+                action: RoutingAction::Suppressed,
+                channels: vec![],
+                reason: format!(
+                    "Suppressed during quiet hours ({:02}:00-{:02}:00)",
+                    qh.start_hour, qh.end_hour
+                ),
+            };
+            self.audit_decision(&decision);
+            return decision;
         }
 
         // 2. Check routing rules in priority order
@@ -308,6 +314,7 @@ impl RoutingEngine {
     }
 
     /// Check for alerts that should be escalated
+    #[must_use]
     pub fn check_escalation(
         &self,
         alert: &AlertContext,

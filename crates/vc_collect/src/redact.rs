@@ -30,6 +30,7 @@ pub struct RedactionRule {
 }
 
 /// Built-in redaction rules for common secret patterns
+#[must_use]
 pub fn default_rules() -> Vec<RedactionRule> {
     // Order matters: specific patterns before generic ones
     vec![
@@ -125,13 +126,21 @@ pub struct RedactionEngine {
     store: Option<Arc<VcStore>>,
 }
 
+impl Default for RedactionEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RedactionEngine {
     /// Create with default rules
+    #[must_use]
     pub fn new() -> Self {
         Self::with_rules(default_rules(), "v1")
     }
 
     /// Create with custom rules
+    #[must_use]
     pub fn with_rules(rules: Vec<RedactionRule>, version: &str) -> Self {
         let compiled = rules
             .into_iter()
@@ -158,6 +167,7 @@ impl RedactionEngine {
     }
 
     /// Attach a store for logging redaction events
+    #[must_use]
     pub fn with_store(mut self, store: Arc<VcStore>) -> Self {
         self.store = Some(store);
         self
@@ -171,6 +181,7 @@ impl RedactionEngine {
     }
 
     /// Redact a string, returning the redacted text and stats
+    #[must_use]
     pub fn redact_text(&self, input: &str) -> (String, RedactionStats) {
         let mut output = input.to_string();
         let mut stats = RedactionStats::default();
@@ -179,7 +190,10 @@ impl RedactionEngine {
             let count = rule.regex.find_iter(&output).count();
             if count > 0 {
                 let before_len = output.len();
-                output = rule.regex.replace_all(&output, &*rule.replacement).to_string();
+                output = rule
+                    .regex
+                    .replace_all(&output, &*rule.replacement)
+                    .to_string();
                 let after_len = output.len();
 
                 stats.fields_redacted += count;
@@ -207,10 +221,10 @@ impl RedactionEngine {
         field_name: Option<&str>,
     ) {
         // Skip allowlisted fields
-        if let Some(name) = field_name {
-            if self.allowlist.iter().any(|a| a == name) {
-                return;
-            }
+        if let Some(name) = field_name
+            && self.allowlist.iter().any(|a| a == name)
+        {
+            return;
         }
 
         match value {
@@ -249,24 +263,27 @@ impl RedactionEngine {
     ) -> RedactionStats {
         let stats = self.redact_json(value);
 
-        if stats.fields_redacted > 0 {
-            if let Some(ref store) = self.store {
-                let hash = content_hash(&serde_json::to_string(value).unwrap_or_default());
-                let _ = store.insert_redaction_event(
-                    machine_id,
-                    collector,
-                    stats.fields_redacted as i32,
-                    stats.bytes_redacted as i64,
-                    &self.rules_version,
-                    Some(&hash),
-                );
-            }
+        if stats.fields_redacted > 0
+            && let Some(ref store) = self.store
+        {
+            let hash = content_hash(&serde_json::to_string(value).unwrap_or_default());
+            let fields_redacted = i32::try_from(stats.fields_redacted).unwrap_or(i32::MAX);
+            let bytes_redacted = i64::try_from(stats.bytes_redacted).unwrap_or(i64::MAX);
+            let _ = store.insert_redaction_event(
+                machine_id,
+                collector,
+                fields_redacted,
+                bytes_redacted,
+                &self.rules_version,
+                Some(&hash),
+            );
         }
 
         stats
     }
 
     /// Get the number of compiled rules
+    #[must_use]
     pub fn rule_count(&self) -> usize {
         self.rules.len()
     }
@@ -510,7 +527,8 @@ mod tests {
     #[test]
     fn test_stats_rule_matches() {
         let engine = engine();
-        let input = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig and password=hunter2secret";
+        let input =
+            "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig and password=hunter2secret";
         let (_, stats) = engine.redact_text(input);
         assert!(stats.rule_matches.len() >= 2);
     }

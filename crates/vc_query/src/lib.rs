@@ -1,4 +1,4 @@
-//! vc_query - Query library for Vibe Cockpit
+//! `vc_query` - Query library for Vibe Cockpit
 //!
 //! This crate provides:
 //! - Canonical queries for health, rollups, and anomalies
@@ -19,12 +19,12 @@ pub mod cost;
 pub mod digest;
 
 pub mod nl;
-pub use nl::{NlEngine, NlQueryResult, QueryIntent};
 pub use cost::{
     AnomalySeverity, AnomalyType, ConfidenceFactors, CostAnomaly, CostAttribution, CostDriver,
     CostQueryBuilder, CostSummary, CostTrend, MachineCost, ProviderCost, ProviderPricing, RepoCost,
     estimate_cost,
 };
+pub use nl::{NlEngine, NlQueryResult, QueryIntent};
 
 /// Query errors
 #[derive(Error, Debug)]
@@ -70,6 +70,7 @@ pub enum Severity {
 }
 
 impl Severity {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Severity::Healthy => "healthy",
@@ -94,7 +95,7 @@ impl std::str::FromStr for Severity {
 }
 
 /// Default factor weights for health score calculation.
-/// Each factor_id maps to a weight (higher = more important).
+/// Each `factor_id` maps to a weight (higher = more important).
 pub struct HealthWeights {
     pub sys_cpu: f64,
     pub sys_memory: f64,
@@ -132,7 +133,8 @@ impl Default for HealthWeights {
 }
 
 impl HealthWeights {
-    /// Look up weight by factor_id
+    /// Look up weight by `factor_id`.
+    #[must_use]
     pub fn weight_for(&self, factor_id: &str) -> f64 {
         match factor_id {
             "sys_cpu" => self.sys_cpu,
@@ -159,6 +161,7 @@ impl HealthWeights {
 /// 1. Compute weighted average of all factor scores
 /// 2. Apply penalty for each critical factor (-0.1)
 /// 3. Clamp result to [0.0, 1.0]
+#[must_use]
 pub fn compute_overall_score(factors: &[HealthFactor]) -> f64 {
     if factors.is_empty() {
         return 1.0;
@@ -177,12 +180,14 @@ pub fn compute_overall_score(factors: &[HealthFactor]) -> f64 {
         .iter()
         .filter(|f| f.severity == Severity::Critical)
         .count();
-    score -= critical_count as f64 * 0.1;
+    let critical_count_f64 = f64::from(u32::try_from(critical_count).unwrap_or(u32::MAX));
+    score -= critical_count_f64 * 0.1;
 
     score.clamp(0.0, 1.0)
 }
 
 /// Classify a score into a severity level
+#[must_use]
 pub fn score_to_severity(score: f64) -> Severity {
     if score >= 0.8 {
         Severity::Healthy
@@ -200,6 +205,7 @@ pub fn score_to_severity(score: f64) -> Severity {
 ///
 /// - `inverted=false`: higher value is worse (CPU%, memory%, disk%)
 /// - `inverted=true`: lower value is worse (free disk%, rate limit time remaining)
+#[must_use]
 pub fn classify_metric(
     value: f64,
     warning_threshold: f64,
@@ -259,11 +265,16 @@ pub struct QueryBuilder<'a> {
 }
 
 impl<'a> QueryBuilder<'a> {
+    #[must_use]
     pub fn new(store: &'a VcStore) -> Self {
         Self { store }
     }
 
     /// Get fleet overview
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if retrieval fails.
     pub fn fleet_overview(&self) -> Result<FleetOverview, QueryError> {
         // Placeholder implementation
         Ok(FleetOverview {
@@ -281,6 +292,10 @@ impl<'a> QueryBuilder<'a> {
 
     /// Get health score for a machine by reading the latest stored summary.
     /// Falls back to score 1.0 (healthy) if no health data exists yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if underlying store queries fail.
     pub fn machine_health(&self, machine_id: &str) -> Result<HealthScore, QueryError> {
         let sql = format!(
             "SELECT overall_score, worst_factor_id, details_json \
@@ -339,6 +354,10 @@ impl<'a> QueryBuilder<'a> {
 
     /// Compute and persist health factors and summary for a machine.
     /// `factors` are the pre-computed health factors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if serialization or database writes fail.
     pub fn persist_health_score(
         &self,
         machine_id: &str,
@@ -422,6 +441,10 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// List all stored health summaries (latest per machine)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if query execution fails.
     pub fn list_health_summaries(&self) -> Result<Vec<serde_json::Value>, QueryError> {
         let sql = "SELECT hs.machine_id, hs.overall_score, hs.worst_factor_id, \
                    hs.factor_count, hs.critical_count, hs.warning_count, \
@@ -436,12 +459,20 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// Get recent alerts
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if query execution fails.
     pub fn recent_alerts(&self, limit: usize) -> Result<Vec<serde_json::Value>, QueryError> {
         let sql = format!("SELECT * FROM alert_history ORDER BY fired_at DESC LIMIT {limit}");
         Ok(self.store.query_json(&sql)?)
     }
 
     /// Get machine list with status
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if query execution fails.
     pub fn machines(&self) -> Result<Vec<serde_json::Value>, QueryError> {
         let sql = "SELECT * FROM machines ORDER BY hostname";
         Ok(self.store.query_json(sql)?)
@@ -602,7 +633,7 @@ mod tests {
         let parsed: FleetOverview = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.total_machines, overview.total_machines);
-        assert_eq!(parsed.fleet_health_score, overview.fleet_health_score);
+        assert!((parsed.fleet_health_score - overview.fleet_health_score).abs() < f64::EPSILON);
     }
 
     // QueryBuilder tests (with in-memory store)
@@ -614,7 +645,7 @@ mod tests {
         let overview = builder.fleet_overview().unwrap();
         // Default placeholder returns zeros
         assert_eq!(overview.total_machines, 0);
-        assert_eq!(overview.fleet_health_score, 1.0);
+        assert!((overview.fleet_health_score - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -624,7 +655,7 @@ mod tests {
 
         let health = builder.machine_health("test-machine").unwrap();
         assert_eq!(health.machine_id, "test-machine");
-        assert_eq!(health.overall_score, 1.0);
+        assert!((health.overall_score - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -641,12 +672,12 @@ mod tests {
         let store = VcStore::open_memory().unwrap();
         store
             .execute_batch(
-                r#"
+                r"
                 INSERT INTO alert_history (id, rule_id, fired_at, severity, title)
                 VALUES (1, 'r1', TIMESTAMP '2026-01-01 00:00:00', 'warning', 'First');
                 INSERT INTO alert_history (id, rule_id, fired_at, severity, title)
                 VALUES (2, 'r2', TIMESTAMP '2026-01-02 00:00:00', 'critical', 'Second');
-                "#,
+                ",
             )
             .unwrap();
 
@@ -661,12 +692,12 @@ mod tests {
         let store = VcStore::open_memory().unwrap();
         store
             .execute_batch(
-                r#"
+                r"
                 INSERT INTO machines (machine_id, hostname)
                 VALUES ('m2', 'zulu');
                 INSERT INTO machines (machine_id, hostname)
                 VALUES ('m1', 'alpha');
-                "#,
+                ",
             )
             .unwrap();
 
@@ -795,7 +826,7 @@ mod tests {
     #[test]
     fn test_classify_metric_inverted_warning() {
         // Free disk at 15%, warning at 20%, critical at 10% (inverted)
-        let (score, severity) = classify_metric(15.0, 20.0, 10.0, true);
+        let (_score, severity) = classify_metric(15.0, 20.0, 10.0, true);
         assert_eq!(severity, Severity::Warning);
     }
 
@@ -992,7 +1023,7 @@ mod tests {
 
         // No data - should return default healthy score
         let health = qb.machine_health("nonexistent").unwrap();
-        assert_eq!(health.overall_score, 1.0);
+        assert!((health.overall_score - 1.0).abs() < f64::EPSILON);
         assert!(health.factors.is_empty());
     }
 }

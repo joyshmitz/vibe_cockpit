@@ -1,6 +1,6 @@
 //! Natural language query interface
 //!
-//! Translates plain-English questions into SQL queries against DuckDB.
+//! Translates plain-English questions into SQL queries against `DuckDB`.
 //! Uses rule-based pattern matching (no LLM required).
 //!
 //! Pipeline:
@@ -11,7 +11,10 @@
 //! 5. Execute query with guardrails
 //! 6. Format results
 
-use crate::{QueryError, guardrails::{GuardrailConfig, QueryValidator}};
+use crate::{
+    QueryError,
+    guardrails::{GuardrailConfig, QueryValidator},
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use vc_store::VcStore;
@@ -43,6 +46,7 @@ pub enum QueryIntent {
 }
 
 impl QueryIntent {
+    #[must_use]
     pub fn description(&self) -> &'static str {
         match self {
             Self::MachineStatus => "Machine status query",
@@ -184,6 +188,7 @@ const INTENT_PATTERNS: &[IntentPattern] = &[
 ];
 
 /// Classify the intent of a natural language query
+#[must_use]
 pub fn classify_intent(question: &str) -> QueryIntent {
     let normalized = question.to_lowercase();
     let mut best_intent = QueryIntent::Unknown;
@@ -218,42 +223,76 @@ pub fn classify_intent(question: &str) -> QueryIntent {
 // ============================================================================
 
 /// Extract entities from a natural language query
+#[must_use]
 pub fn extract_entities(question: &str) -> QueryEntities {
     let normalized = question.to_lowercase();
-    let mut entities = QueryEntities::default();
-
-    // Extract time range
-    entities.time_range = extract_time_range(&normalized);
-
-    // Extract severity
-    entities.severity = extract_severity(&normalized);
-
-    // Extract limit (e.g., "top 5", "last 10")
-    entities.limit = extract_limit(&normalized);
-
-    // Extract machine name (after "machine", "on", "for")
-    entities.machine = extract_machine_name(&normalized);
-
-    // Extract search term for knowledge queries
-    entities.search_term = extract_search_term(&normalized);
-
-    entities
+    QueryEntities {
+        machine: extract_machine_name(&normalized),
+        time_range: extract_time_range(&normalized),
+        severity: extract_severity(&normalized),
+        limit: extract_limit(&normalized),
+        search_term: extract_search_term(&normalized),
+    }
 }
 
 /// Extract time range from query
 fn extract_time_range(text: &str) -> Option<TimeRange> {
     let time_patterns: &[(&str, &str, &str)] = &[
-        ("today", "today", "captured_at >= CAST(current_date AS TIMESTAMP)"),
-        ("yesterday", "yesterday", "captured_at >= CAST(current_date - INTERVAL 1 DAY AS TIMESTAMP) AND captured_at < CAST(current_date AS TIMESTAMP)"),
-        ("last hour", "1 hour", "captured_at >= current_timestamp - INTERVAL 1 HOUR"),
-        ("past hour", "1 hour", "captured_at >= current_timestamp - INTERVAL 1 HOUR"),
-        ("last 24 hours", "24 hours", "captured_at >= current_timestamp - INTERVAL 24 HOUR"),
-        ("last day", "1 day", "captured_at >= current_timestamp - INTERVAL 1 DAY"),
-        ("last week", "1 week", "captured_at >= current_timestamp - INTERVAL 7 DAY"),
-        ("past week", "1 week", "captured_at >= current_timestamp - INTERVAL 7 DAY"),
-        ("this week", "this week", "captured_at >= date_trunc('week', current_date)"),
-        ("last month", "1 month", "captured_at >= current_timestamp - INTERVAL 30 DAY"),
-        ("this month", "this month", "captured_at >= date_trunc('month', current_date)"),
+        (
+            "today",
+            "today",
+            "captured_at >= CAST(current_date AS TIMESTAMP)",
+        ),
+        (
+            "yesterday",
+            "yesterday",
+            "captured_at >= CAST(current_date - INTERVAL 1 DAY AS TIMESTAMP) AND captured_at < CAST(current_date AS TIMESTAMP)",
+        ),
+        (
+            "last hour",
+            "1 hour",
+            "captured_at >= current_timestamp - INTERVAL 1 HOUR",
+        ),
+        (
+            "past hour",
+            "1 hour",
+            "captured_at >= current_timestamp - INTERVAL 1 HOUR",
+        ),
+        (
+            "last 24 hours",
+            "24 hours",
+            "captured_at >= current_timestamp - INTERVAL 24 HOUR",
+        ),
+        (
+            "last day",
+            "1 day",
+            "captured_at >= current_timestamp - INTERVAL 1 DAY",
+        ),
+        (
+            "last week",
+            "1 week",
+            "captured_at >= current_timestamp - INTERVAL 7 DAY",
+        ),
+        (
+            "past week",
+            "1 week",
+            "captured_at >= current_timestamp - INTERVAL 7 DAY",
+        ),
+        (
+            "this week",
+            "this week",
+            "captured_at >= date_trunc('week', current_date)",
+        ),
+        (
+            "last month",
+            "1 month",
+            "captured_at >= current_timestamp - INTERVAL 30 DAY",
+        ),
+        (
+            "this month",
+            "this month",
+            "captured_at >= date_trunc('month', current_date)",
+        ),
     ];
 
     for (pattern, interval, sql) in time_patterns {
@@ -287,11 +326,12 @@ fn extract_limit(text: &str) -> Option<usize> {
     for prefix in limit_patterns {
         if let Some(pos) = text.find(prefix) {
             let after = &text[pos + prefix.len()..];
-            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(n) = num_str.parse::<usize>() {
-                if n > 0 && n <= 1000 {
-                    return Some(n);
-                }
+            let num_str: String = after.chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(n) = num_str.parse::<usize>()
+                && n > 0
+                && n <= 1000
+            {
+                return Some(n);
             }
         }
     }
@@ -312,8 +352,8 @@ fn extract_machine_name(text: &str) -> Option<String> {
             if !name.is_empty() && name.len() > 1 {
                 // Filter out common words that aren't machine names
                 let common_words = [
-                    "the", "is", "are", "was", "any", "all", "most", "least",
-                    "it", "my", "our", "this", "that", "has", "have", "not",
+                    "the", "is", "are", "was", "any", "all", "most", "least", "it", "my", "our",
+                    "this", "that", "has", "have", "not",
                 ];
                 if !common_words.contains(&name.as_str()) {
                     return Some(name);
@@ -349,6 +389,8 @@ fn extract_search_term(text: &str) -> Option<String> {
 // ============================================================================
 
 /// Generate SQL from intent and entities
+#[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn generate_sql(intent: QueryIntent, entities: &QueryEntities) -> String {
     let limit = entities.limit.unwrap_or(50).min(1000);
 
@@ -609,6 +651,7 @@ pub fn generate_sql(intent: QueryIntent, entities: &QueryEntities) -> String {
 }
 
 /// Generate a human-readable explanation of what the query does
+#[must_use]
 pub fn explain_query(intent: QueryIntent, entities: &QueryEntities) -> String {
     let mut parts = vec![intent.description().to_string()];
 
@@ -642,6 +685,7 @@ pub struct NlEngine {
 }
 
 impl NlEngine {
+    #[must_use]
     pub fn new(store: Arc<VcStore>) -> Self {
         Self {
             store,
@@ -650,6 +694,10 @@ impl NlEngine {
     }
 
     /// Process a natural language question and return results
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] when query safety checks fail.
     pub fn ask(&self, question: &str) -> Result<NlQueryResult, QueryError> {
         let intent = classify_intent(question);
         let entities = extract_entities(question);
@@ -658,7 +706,9 @@ impl NlEngine {
 
         // Validate query safety
         if let Err(e) = self.validator.validate_raw(&sql) {
-            return Err(QueryError::InvalidQuery(format!("Query safety check failed: {e}")));
+            return Err(QueryError::InvalidQuery(format!(
+                "Query safety check failed: {e}"
+            )));
         }
 
         // Execute query
@@ -704,10 +754,7 @@ mod tests {
             classify_intent("Show all machines"),
             QueryIntent::MachineList
         );
-        assert_eq!(
-            classify_intent("List my servers"),
-            QueryIntent::MachineList
-        );
+        assert_eq!(classify_intent("List my servers"), QueryIntent::MachineList);
     }
 
     #[test]
@@ -1014,7 +1061,7 @@ mod tests {
         assert!(explanation.contains("orko"));
         assert!(explanation.contains("critical"));
         assert!(explanation.contains("1 hour"));
-        assert!(explanation.contains("5"));
+        assert!(explanation.contains('5'));
     }
 
     // QueryIntent tests
@@ -1093,7 +1140,9 @@ mod tests {
         let store = Arc::new(VcStore::open_memory().unwrap());
         let engine = NlEngine::new(store);
 
-        let result = engine.ask("What is the health score for machine orko?").unwrap();
+        let result = engine
+            .ask("What is the health score for machine orko?")
+            .unwrap();
         assert_eq!(result.intent, QueryIntent::HealthScore);
         assert!(result.entities.machine.is_some());
     }

@@ -1,4 +1,4 @@
-//! Database migrations for vc_store
+//! Database migrations for `vc_store`
 
 use crate::StoreError;
 use duckdb::Connection;
@@ -136,16 +136,20 @@ const MIGRATIONS: &[Migration] = &[
 ];
 
 /// Run all pending migrations
+///
+/// # Errors
+///
+/// Returns [`StoreError`] if migration bookkeeping or any migration SQL fails.
 pub fn run_all(conn: &Connection) -> Result<(), StoreError> {
     // Create migrations table if not exists
     conn.execute_batch(
-        r#"
+        r"
         CREATE TABLE IF NOT EXISTS _migrations (
             version INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             applied_at TIMESTAMP DEFAULT current_timestamp
         );
-    "#,
+    ",
     )?;
 
     // Get current version
@@ -161,7 +165,7 @@ pub fn run_all(conn: &Connection) -> Result<(), StoreError> {
 
     // Apply pending migrations
     for migration in MIGRATIONS {
-        if migration.version as i64 > current_version {
+        if i64::from(migration.version) > current_version {
             info!(
                 version = migration.version,
                 name = migration.name,

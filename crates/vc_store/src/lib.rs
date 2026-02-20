@@ -1,7 +1,7 @@
-//! vc_store - DuckDB storage layer for Vibe Cockpit
+//! `vc_store` - `DuckDB` storage layer for Vibe Cockpit
 //!
 //! This crate provides:
-//! - DuckDB connection management
+//! - `DuckDB` connection management
 //! - Schema migrations
 //! - Data ingestion helpers
 //! - Query utilities
@@ -9,6 +9,7 @@
 use chrono::{DateTime, Utc};
 use duckdb::Connection;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -47,6 +48,7 @@ pub enum AuditEventType {
 }
 
 impl AuditEventType {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             AuditEventType::CollectorRun => "collector_run",
@@ -81,6 +83,7 @@ pub enum AuditResult {
 }
 
 impl AuditResult {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             AuditResult::Success => "success",
@@ -134,6 +137,7 @@ impl AuditEvent {
         }
     }
 
+    #[must_use]
     pub fn with_machine_id(mut self, machine_id: impl Into<String>) -> Self {
         self.machine_id = Some(machine_id.into());
         self
@@ -217,6 +221,7 @@ pub enum DriftSeverity {
 }
 
 impl DriftSeverity {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             DriftSeverity::Info => "info",
@@ -225,6 +230,7 @@ impl DriftSeverity {
         }
     }
 
+    #[must_use]
     pub fn from_z_score(z: f64) -> Self {
         let abs_z = z.abs();
         if abs_z >= 4.0 {
@@ -284,6 +290,11 @@ pub struct VcStore {
 
 impl VcStore {
     /// Open or create database at path
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if directory creation, database opening, pragma setup, or
+    /// migration execution fails.
     #[instrument]
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         info!(path = %path.display(), "Opening DuckDB database");
@@ -297,10 +308,10 @@ impl VcStore {
 
         // Set pragmas for performance
         conn.execute_batch(
-            r#"
+            r"
             PRAGMA threads=4;
             PRAGMA memory_limit='512MB';
-        "#,
+        ",
         )?;
 
         let store = Self {
@@ -315,6 +326,10 @@ impl VcStore {
     }
 
     /// Open in-memory database (for testing)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if in-memory database setup or migrations fail.
     pub fn open_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
 
@@ -336,11 +351,20 @@ impl VcStore {
     }
 
     /// Get access to the underlying connection
+    #[must_use]
     pub fn connection(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.conn)
     }
 
     /// Execute a query that returns no results
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if statement preparation or execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn execute(&self, sql: &str, params: &[&str]) -> Result<usize, StoreError> {
         let conn = self.conn.lock().unwrap();
         let affected = conn.execute(sql, duckdb::params_from_iter(params.iter()))?;
@@ -348,6 +372,14 @@ impl VcStore {
     }
 
     /// Execute a query without parameters
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if statement execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn execute_simple(&self, sql: &str) -> Result<usize, StoreError> {
         let conn = self.conn.lock().unwrap();
         let affected = conn.execute(sql, [])?;
@@ -355,6 +387,14 @@ impl VcStore {
     }
 
     /// Execute a batch of SQL statements
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if batch execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn execute_batch(&self, sql: &str) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(sql)?;
@@ -363,11 +403,20 @@ impl VcStore {
 
     /// Insert a row into a table from JSON
     /// Note: This extracts key-value pairs from the JSON object
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if `json` is not an object, SQL execution fails, or value
+    /// serialization fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_json(&self, table: &str, json: &serde_json::Value) -> Result<(), StoreError> {
         if let serde_json::Value::Object(map) = json {
             let conn = self.conn.lock().unwrap();
 
-            let columns: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+            let columns: Vec<&str> = map.keys().map(String::as_str).collect();
             let placeholders: Vec<&str> = columns.iter().map(|_| "?").collect();
 
             let sql = format!(
@@ -379,10 +428,9 @@ impl VcStore {
 
             let mut stmt = conn.prepare(&sql)?;
 
-            let params: Vec<Box<dyn duckdb::ToSql>> =
-                map.values().map(|v| json_value_to_sql(v)).collect();
+            let params: Vec<Box<dyn duckdb::ToSql>> = map.values().map(json_value_to_sql).collect();
 
-            let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+            let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(AsRef::as_ref).collect();
 
             stmt.execute(param_refs.as_slice())?;
             Ok(())
@@ -394,6 +442,10 @@ impl VcStore {
     }
 
     /// Insert multiple rows from JSON array
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if inserting any row fails.
     pub fn insert_json_batch(
         &self,
         table: &str,
@@ -412,6 +464,14 @@ impl VcStore {
     }
 
     /// Query and return results as JSON
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails or row JSON cannot be parsed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn query_json(&self, sql: &str) -> Result<Vec<serde_json::Value>, StoreError> {
         let conn = self.conn.lock().unwrap();
 
@@ -431,6 +491,14 @@ impl VcStore {
     }
 
     /// Query for a single scalar value
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails or no row is returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn query_scalar<T: duckdb::types::FromSql>(&self, sql: &str) -> Result<T, StoreError> {
         let conn = self.conn.lock().unwrap();
         let value: T = conn.query_row(sql, [], |row| row.get(0))?;
@@ -438,11 +506,20 @@ impl VcStore {
     }
 
     /// Get database path
+    #[must_use]
     pub fn db_path(&self) -> &str {
         &self.db_path
     }
 
     /// Get cursor for incremental collection
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the cursor lookup fails with a database error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_cursor(
         &self,
         machine_id: &str,
@@ -464,6 +541,14 @@ impl VcStore {
     }
 
     /// Update cursor after successful collection
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if cursor upsert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn set_cursor(
         &self,
         machine_id: &str,
@@ -473,16 +558,24 @@ impl VcStore {
     ) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            r#"
+            r"
             INSERT OR REPLACE INTO ingestion_cursors (machine_id, source, cursor_key, cursor_value, updated_at)
             VALUES (?, ?, ?, ?, current_timestamp)
-            "#,
+            ",
             duckdb::params![machine_id, source, key, value],
         )?;
         Ok(())
     }
 
     /// Insert a single audit event
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if serialization or database insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_audit_event(&self, event: &AuditEvent) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap();
         let details_json = serde_json::to_string(&event.details)?;
@@ -496,10 +589,10 @@ impl VcStore {
         )?;
 
         conn.execute(
-            r#"
+            r"
             INSERT INTO audit_events (id, ts, event_type, actor, machine_id, action, result, details_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
+            ",
             duckdb::params![
                 next_id,
                 event.ts.to_rfc3339(),
@@ -515,6 +608,10 @@ impl VcStore {
     }
 
     /// List audit events with optional filters
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_audit_events(
         &self,
         filter: &AuditEventFilter,
@@ -555,6 +652,10 @@ impl VcStore {
     }
 
     /// Fetch a single audit event by ID
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn get_audit_event(&self, id: i64) -> Result<Option<serde_json::Value>, StoreError> {
         let sql = format!(
             "SELECT id, ts, event_type, actor, machine_id, action, result, details_json \
@@ -569,6 +670,14 @@ impl VcStore {
     // =========================================================================
 
     /// List all retention policies
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query preparation or row decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn list_retention_policies(&self) -> Result<Vec<RetentionPolicy>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -595,6 +704,14 @@ impl VcStore {
     }
 
     /// Get a single retention policy by table name
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the query fails with an error other than no rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_retention_policy(
         &self,
         table_name: &str,
@@ -624,6 +741,14 @@ impl VcStore {
     }
 
     /// Set retention policy for a table (upsert)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if policy upsert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn set_retention_policy(
         &self,
         table_name: &str,
@@ -632,7 +757,7 @@ impl VcStore {
         enabled: bool,
     ) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap();
-        let policy_id = format!("retention_{}", table_name);
+        let policy_id = format!("retention_{table_name}");
 
         conn.execute(
             "INSERT OR REPLACE INTO retention_policies (policy_id, table_name, retention_days, aggregate_table, enabled) \
@@ -644,6 +769,10 @@ impl VcStore {
     }
 
     /// Run vacuum for all enabled retention policies (or specific table)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if policy listing, timestamp detection, delete, or logging fails.
     pub fn run_vacuum(
         &self,
         dry_run: bool,
@@ -659,10 +788,10 @@ impl VcStore {
             }
 
             // Skip if specific table requested and doesn't match
-            if let Some(table) = specific_table {
-                if policy.table_name != table {
-                    continue;
-                }
+            if let Some(table) = specific_table
+                && policy.table_name != table
+            {
+                continue;
             }
 
             let result = self.vacuum_table(&policy, dry_run)?;
@@ -682,12 +811,12 @@ impl VcStore {
         let start = std::time::Instant::now();
 
         // Calculate cutoff date
-        let cutoff = Utc::now() - chrono::Duration::days(policy.retention_days as i64);
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(policy.retention_days));
         let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
 
         // Count rows that would be deleted
         // Try common timestamp column names
-        let ts_column = self.detect_timestamp_column(&conn, &policy.table_name)?;
+        let ts_column = Self::detect_timestamp_column(&conn, &policy.table_name)?;
 
         let count_sql = format!(
             "SELECT COUNT(*) FROM {} WHERE {} < '{}'",
@@ -700,12 +829,12 @@ impl VcStore {
 
         if dry_run {
             // Log dry-run result
-            self.log_vacuum_result(
+            Self::log_vacuum_result(
                 &conn,
                 policy,
                 0,
                 0,
-                start.elapsed().as_millis() as i64,
+                i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX),
                 true,
                 None,
             )?;
@@ -715,7 +844,7 @@ impl VcStore {
                 rows_deleted: 0,
                 rows_would_delete: rows_to_delete,
                 rows_aggregated: 0,
-                duration_ms: start.elapsed().as_millis() as i64,
+                duration_ms: i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX),
                 dry_run: true,
                 error: None,
             });
@@ -728,15 +857,15 @@ impl VcStore {
         );
 
         let deleted = match conn.execute(&delete_sql, []) {
-            Ok(n) => n as i64,
+            Ok(n) => i64::try_from(n).unwrap_or(i64::MAX),
             Err(e) => {
                 let error_msg = e.to_string();
-                self.log_vacuum_result(
+                Self::log_vacuum_result(
                     &conn,
                     policy,
                     0,
                     0,
-                    start.elapsed().as_millis() as i64,
+                    i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX),
                     false,
                     Some(&error_msg),
                 )?;
@@ -745,7 +874,7 @@ impl VcStore {
                     rows_deleted: 0,
                     rows_would_delete: rows_to_delete,
                     rows_aggregated: 0,
-                    duration_ms: start.elapsed().as_millis() as i64,
+                    duration_ms: i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX),
                     dry_run: false,
                     error: Some(error_msg),
                 });
@@ -759,12 +888,12 @@ impl VcStore {
         )?;
 
         // Log success
-        self.log_vacuum_result(
+        Self::log_vacuum_result(
             &conn,
             policy,
             deleted,
             0,
-            start.elapsed().as_millis() as i64,
+            i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX),
             false,
             None,
         )?;
@@ -774,25 +903,20 @@ impl VcStore {
             rows_deleted: deleted,
             rows_would_delete: rows_to_delete,
             rows_aggregated: 0,
-            duration_ms: start.elapsed().as_millis() as i64,
+            duration_ms: i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX),
             dry_run: false,
             error: None,
         })
     }
 
     /// Detect the timestamp column for a table
-    fn detect_timestamp_column(
-        &self,
-        conn: &Connection,
-        table_name: &str,
-    ) -> Result<String, StoreError> {
+    fn detect_timestamp_column(conn: &Connection, table_name: &str) -> Result<String, StoreError> {
         // Common timestamp column names in order of preference
         let candidates = ["collected_at", "ts", "created_at", "timestamp", "time"];
 
         for col in candidates {
             let check_sql = format!(
-                "SELECT 1 FROM information_schema.columns WHERE table_name = '{}' AND column_name = '{}' LIMIT 1",
-                table_name, col
+                "SELECT 1 FROM information_schema.columns WHERE table_name = '{table_name}' AND column_name = '{col}' LIMIT 1"
             );
             if conn.query_row(&check_sql, [], |_| Ok(())).is_ok() {
                 return Ok(col.to_string());
@@ -800,14 +924,12 @@ impl VcStore {
         }
 
         Err(StoreError::QueryError(format!(
-            "No timestamp column found in table '{}'. Expected one of: {:?}",
-            table_name, candidates
+            "No timestamp column found in table '{table_name}'. Expected one of: {candidates:?}"
         )))
     }
 
-    /// Log a vacuum operation to retention_log
+    /// Log a vacuum operation to `retention_log`
     fn log_vacuum_result(
-        &self,
         conn: &Connection,
         policy: &RetentionPolicy,
         rows_deleted: i64,
@@ -833,12 +955,15 @@ impl VcStore {
     }
 
     /// Get vacuum history
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_vacuum_history(&self, limit: usize) -> Result<Vec<serde_json::Value>, StoreError> {
         let limit = limit.min(1000);
         let sql = format!(
             "SELECT id, ts, policy_id, table_name, rows_deleted, rows_aggregated, duration_ms, dry_run, error_message \
-             FROM retention_log ORDER BY ts DESC LIMIT {}",
-            limit
+             FROM retention_log ORDER BY ts DESC LIMIT {limit}"
         );
         self.query_json(&sql)
     }
@@ -848,6 +973,14 @@ impl VcStore {
     // =========================================================================
 
     /// Record a collector health entry
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if insert/upsert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_collector_health(&self, health: &CollectorHealth) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -876,6 +1009,14 @@ impl VcStore {
     }
 
     /// Get freshness summary for all collectors on a machine (or all machines)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query preparation, execution, or row decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_freshness_summaries(
         &self,
         machine_id: Option<&str>,
@@ -934,6 +1075,10 @@ impl VcStore {
     }
 
     /// Get recent collector health entries
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_collector_health(
         &self,
         machine_id: Option<&str>,
@@ -971,6 +1116,14 @@ impl VcStore {
     // =========================================================================
 
     /// Upsert a machine baseline
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if baseline serialization or upsert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn set_machine_baseline(
         &self,
         machine_id: &str,
@@ -990,6 +1143,14 @@ impl VcStore {
     }
 
     /// Get a machine baseline
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if baseline query fails with an error other than no rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_machine_baseline(
         &self,
         machine_id: &str,
@@ -1019,6 +1180,10 @@ impl VcStore {
     }
 
     /// List all baselines for a machine
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_machine_baselines(
         &self,
         machine_id: Option<&str>,
@@ -1040,6 +1205,14 @@ impl VcStore {
     // =========================================================================
 
     /// Record a drift event
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if insert or ID allocation fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_drift_event(&self, event: &DriftEvent) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap();
 
@@ -1076,6 +1249,10 @@ impl VcStore {
     }
 
     /// List recent drift events
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_drift_events(
         &self,
         machine_id: Option<&str>,
@@ -1109,7 +1286,11 @@ impl VcStore {
     }
 
     /// Detect drift by comparing a current value against a machine baseline.
-    /// Returns a DriftEvent if z-score exceeds the threshold.
+    /// Returns a `DriftEvent` if z-score exceeds the threshold.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if baseline lookup or drift-event persistence fails.
     pub fn check_drift(
         &self,
         machine_id: &str,
@@ -1174,6 +1355,14 @@ impl VcStore {
     // =========================================================================
 
     /// Log an alert delivery attempt
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_delivery_log(
         &self,
         alert_id: &str,
@@ -1199,6 +1388,14 @@ impl VcStore {
     }
 
     /// Update delivery status (e.g., after retry)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if update execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn update_delivery_status(
         &self,
         delivery_id: i64,
@@ -1215,6 +1412,14 @@ impl VcStore {
     }
 
     /// List delivery logs for an alert
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query preparation, execution, or row decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn list_delivery_logs(
         &self,
         alert_id: Option<&str>,
@@ -1229,8 +1434,7 @@ impl VcStore {
                     "SELECT id, alert_id, channel_type, CAST(delivered_at AS TEXT) AS delivered_at, \
                      status, error_message, retry_count, duration_ms \
                      FROM alert_delivery_log WHERE alert_id = ? \
-                     ORDER BY delivered_at DESC LIMIT {}",
-                    limit
+                     ORDER BY delivered_at DESC LIMIT {limit}"
                 ),
                 vec![Box::new(aid.to_string())],
             )
@@ -1240,15 +1444,14 @@ impl VcStore {
                     "SELECT id, alert_id, channel_type, CAST(delivered_at AS TEXT) AS delivered_at, \
                      status, error_message, retry_count, duration_ms \
                      FROM alert_delivery_log \
-                     ORDER BY delivered_at DESC LIMIT {}",
-                    limit
+                     ORDER BY delivered_at DESC LIMIT {limit}"
                 ),
                 vec![],
             )
         };
 
         let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(AsRef::as_ref).collect();
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, i64>(0)?,
@@ -1270,6 +1473,14 @@ impl VcStore {
     }
 
     /// Get delivery summary stats (total, succeeded, failed per channel)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query preparation, execution, or row decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn delivery_summary(&self) -> Result<Vec<serde_json::Value>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1305,6 +1516,14 @@ impl VcStore {
     // =========================================================================
 
     /// Log an autopilot decision
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_autopilot_decision(
         &self,
         decision_type: &str,
@@ -1330,6 +1549,14 @@ impl VcStore {
     }
 
     /// List recent autopilot decisions
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query preparation, execution, or row decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn list_autopilot_decisions(
         &self,
         decision_type: Option<&str>,
@@ -1344,8 +1571,7 @@ impl VcStore {
                     "SELECT id, decision_type, reason, confidence, executed, \
                      CAST(decided_at AS TEXT) AS decided_at, details_json \
                      FROM autopilot_decisions WHERE decision_type = ? \
-                     ORDER BY decided_at DESC LIMIT {}",
-                    limit
+                     ORDER BY decided_at DESC LIMIT {limit}"
                 ),
                 vec![Box::new(dt.to_string())],
             )
@@ -1355,15 +1581,14 @@ impl VcStore {
                     "SELECT id, decision_type, reason, confidence, executed, \
                      CAST(decided_at AS TEXT) AS decided_at, details_json \
                      FROM autopilot_decisions \
-                     ORDER BY decided_at DESC LIMIT {}",
-                    limit
+                     ORDER BY decided_at DESC LIMIT {limit}"
                 ),
                 vec![],
             )
         };
 
         let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(AsRef::as_ref).collect();
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, i64>(0)?,
@@ -1384,6 +1609,14 @@ impl VcStore {
     }
 
     /// Get autopilot decision summary (counts by type and executed status)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query preparation, execution, or row decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn autopilot_decision_summary(&self) -> Result<Vec<serde_json::Value>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1414,6 +1647,14 @@ impl VcStore {
 
     /// Insert or replace rows (handles conflicts via PRIMARY KEY)
     /// Uses INSERT OR REPLACE which replaces the row if a conflict occurs
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if row insertion fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn upsert_json(
         &self,
         table: &str,
@@ -1429,7 +1670,7 @@ impl VcStore {
 
         for row in rows {
             if let serde_json::Value::Object(map) = row {
-                let columns: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+                let columns: Vec<&str> = map.keys().map(String::as_str).collect();
                 let placeholders: Vec<&str> = columns.iter().map(|_| "?").collect();
 
                 let sql = format!(
@@ -1442,10 +1683,10 @@ impl VcStore {
                 let mut stmt = conn.prepare(&sql)?;
 
                 let params: Vec<Box<dyn duckdb::ToSql>> =
-                    map.values().map(|v| json_value_to_sql(v)).collect();
+                    map.values().map(json_value_to_sql).collect();
 
                 let param_refs: Vec<&dyn duckdb::ToSql> =
-                    params.iter().map(|b| b.as_ref()).collect();
+                    params.iter().map(AsRef::as_ref).collect();
 
                 stmt.execute(param_refs.as_slice())?;
                 count += 1;
@@ -1460,6 +1701,14 @@ impl VcStore {
     // ========================================================================
 
     /// Create a new incident
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if insert execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn create_incident(
         &self,
         incident_id: &str,
@@ -1477,6 +1726,14 @@ impl VcStore {
     }
 
     /// Get an incident by ID
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails or row JSON cannot be parsed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_incident(&self, incident_id: &str) -> Result<Option<serde_json::Value>, StoreError> {
         let sql = "SELECT to_json(_row) FROM \
                    (SELECT * FROM incidents WHERE incident_id = ?) AS _row";
@@ -1497,6 +1754,14 @@ impl VcStore {
     }
 
     /// List incidents with optional status filter
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution or JSON decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn list_incidents(
         &self,
         status: Option<&str>,
@@ -1524,10 +1789,8 @@ impl VcStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&sql)?;
 
-        let param_refs: Vec<&dyn duckdb::ToSql> = params
-            .iter()
-            .map(|p| p as &dyn duckdb::ToSql)
-            .collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> =
+            params.iter().map(|p| p as &dyn duckdb::ToSql).collect();
 
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
             let json_str: String = row.get(0)?;
@@ -1545,6 +1808,14 @@ impl VcStore {
     }
 
     /// Update incident status
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if update execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn update_incident_status(
         &self,
         incident_id: &str,
@@ -1554,7 +1825,10 @@ impl VcStore {
     ) -> Result<usize, StoreError> {
         let conn = self.conn.lock().unwrap();
 
-        let mut set_clauses = vec!["status = ?".to_string(), "updated_at = current_timestamp".to_string()];
+        let mut set_clauses = vec![
+            "status = ?".to_string(),
+            "updated_at = current_timestamp".to_string(),
+        ];
         let mut params: Vec<Box<dyn duckdb::ToSql>> = vec![Box::new(status.to_string())];
 
         if let Some(res) = resolution {
@@ -1579,12 +1853,20 @@ impl VcStore {
             set_clauses.join(", ")
         );
 
-        let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> = params.iter().map(AsRef::as_ref).collect();
         let affected = conn.execute(&sql, param_refs.as_slice())?;
         Ok(affected)
     }
 
     /// Add a note to an incident
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if insert execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn add_incident_note(
         &self,
         incident_id: &str,
@@ -1602,6 +1884,14 @@ impl VcStore {
     }
 
     /// Get incident notes
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution or JSON decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_incident_notes(
         &self,
         incident_id: &str,
@@ -1626,6 +1916,14 @@ impl VcStore {
     }
 
     /// Add a timeline event to an incident
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if insert execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn add_incident_timeline_event(
         &self,
         incident_id: &str,
@@ -1649,6 +1947,14 @@ impl VcStore {
     // ========================================================================
 
     /// Record a fleet command
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if insert execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn record_fleet_command(
         &self,
         command_id: &str,
@@ -1666,6 +1972,14 @@ impl VcStore {
     }
 
     /// Update fleet command status
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if update execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn update_fleet_command(
         &self,
         command_id: &str,
@@ -1683,6 +1997,14 @@ impl VcStore {
     }
 
     /// List fleet commands
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution or JSON decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn list_fleet_commands(
         &self,
         command_type: Option<&str>,
@@ -1709,10 +2031,8 @@ impl VcStore {
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn duckdb::ToSql> = params
-            .iter()
-            .map(|p| p as &dyn duckdb::ToSql)
-            .collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> =
+            params.iter().map(|p| p as &dyn duckdb::ToSql).collect();
 
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
             let json_str: String = row.get(0)?;
@@ -1734,6 +2054,14 @@ impl VcStore {
     // =========================================================================
 
     /// Mark a session as mined
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if insert execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn mark_session_mined(
         &self,
         session_id: &str,
@@ -1753,6 +2081,14 @@ impl VcStore {
     }
 
     /// Check if a session has already been mined
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn is_session_mined(&self, session_id: &str) -> Result<bool, StoreError> {
         let sql = "SELECT COUNT(*) FROM mined_sessions WHERE session_id = ?";
         let conn = self.conn.lock().unwrap();
@@ -1761,6 +2097,10 @@ impl VcStore {
     }
 
     /// List unmined successful sessions for mining candidates
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_unmined_sessions(
         &self,
         limit: usize,
@@ -1778,6 +2118,10 @@ impl VcStore {
     }
 
     /// Get mining statistics
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn mining_stats(&self) -> Result<serde_json::Value, StoreError> {
         let sql = "SELECT to_json(_row) FROM \
                    (SELECT COUNT(*) as total_mined, \
@@ -1790,6 +2134,14 @@ impl VcStore {
     }
 
     /// Get incident timeline events
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution or JSON decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_incident_timeline(
         &self,
         incident_id: &str,
@@ -1818,6 +2170,14 @@ impl VcStore {
     // =========================================================================
 
     /// Build a point-in-time replay snapshot for an incident
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if incident lookup, timeline query, or JSON decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn build_replay_snapshot(
         &self,
         incident_id: &str,
@@ -1825,14 +2185,12 @@ impl VcStore {
     ) -> Result<serde_json::Value, StoreError> {
         // Get the incident itself
         let incident = self.get_incident(incident_id)?;
-        let incident = incident.ok_or_else(|| {
-            StoreError::QueryError(format!("Incident not found: {incident_id}"))
-        })?;
+        let incident = incident
+            .ok_or_else(|| StoreError::QueryError(format!("Incident not found: {incident_id}")))?;
 
         // Machines state at timestamp
-        let machines_sql = format!(
-            "SELECT * FROM machines WHERE last_seen <= '{at_ts}' ORDER BY hostname"
-        );
+        let machines_sql =
+            format!("SELECT * FROM machines WHERE last_seen <= '{at_ts}' ORDER BY hostname");
         let machines = self.query_json(&machines_sql).unwrap_or_default();
 
         // Alerts active around the timestamp
@@ -1900,6 +2258,14 @@ impl VcStore {
     }
 
     /// Cache a replay snapshot for fast retrieval
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn cache_replay_snapshot(
         &self,
         incident_id: &str,
@@ -1924,6 +2290,14 @@ impl VcStore {
     }
 
     /// Get a cached replay snapshot
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution or JSON decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_cached_replay(
         &self,
         incident_id: &str,
@@ -1950,6 +2324,10 @@ impl VcStore {
     }
 
     /// List cached replay timestamps for an incident
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_replay_snapshots(
         &self,
         incident_id: &str,
@@ -1963,6 +2341,10 @@ impl VcStore {
     }
 
     /// Get replay with caching: returns cached snapshot if available, otherwise builds and caches
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if replay retrieval/building, caching, or JSON serialization fails.
     pub fn get_or_build_replay(
         &self,
         incident_id: &str,
@@ -1985,14 +2367,17 @@ impl VcStore {
     }
 
     /// Export incident replay as structured JSON (all snapshots + metadata)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if incident, timeline, notes, or snapshot retrieval fails.
     pub fn export_incident_replay(
         &self,
         incident_id: &str,
     ) -> Result<serde_json::Value, StoreError> {
         let incident = self.get_incident(incident_id)?;
-        let incident = incident.ok_or_else(|| {
-            StoreError::QueryError(format!("Incident not found: {incident_id}"))
-        })?;
+        let incident = incident
+            .ok_or_else(|| StoreError::QueryError(format!("Incident not found: {incident_id}")))?;
 
         let timeline = self.get_incident_timeline(incident_id)?;
         let notes = self.get_incident_notes(incident_id)?;
@@ -2012,6 +2397,14 @@ impl VcStore {
     // =========================================================================
 
     /// Record a poll schedule decision
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_poll_decision(
         &self,
         machine_id: &str,
@@ -2037,6 +2430,14 @@ impl VcStore {
     }
 
     /// Get the latest poll interval for a machine/collector
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query fails with an error other than no rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_latest_poll_interval(
         &self,
         machine_id: &str,
@@ -2054,6 +2455,10 @@ impl VcStore {
     }
 
     /// List recent poll decisions
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_poll_decisions(
         &self,
         machine_id: Option<&str>,
@@ -2075,6 +2480,14 @@ impl VcStore {
     }
 
     /// Insert a profiling sample
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_profile_sample(
         &self,
         machine_id: &str,
@@ -2100,6 +2513,10 @@ impl VcStore {
     }
 
     /// List profiling samples, optionally filtered by machine or profile
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_profile_samples(
         &self,
         machine_id: Option<&str>,
@@ -2125,6 +2542,14 @@ impl VcStore {
     // =========================================================================
 
     /// Store a generated digest report
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_digest_report(
         &self,
         report_id: &str,
@@ -2149,7 +2574,14 @@ impl VcStore {
     }
 
     /// Get a digest report by ID
-    pub fn get_digest_report(&self, report_id: &str) -> Result<Option<serde_json::Value>, StoreError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
+    pub fn get_digest_report(
+        &self,
+        report_id: &str,
+    ) -> Result<Option<serde_json::Value>, StoreError> {
         let results = self.query_json(&format!(
             "SELECT * FROM digest_reports WHERE report_id = '{report_id}' LIMIT 1"
         ))?;
@@ -2157,6 +2589,10 @@ impl VcStore {
     }
 
     /// List recent digest reports
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_digest_reports(&self, limit: usize) -> Result<Vec<serde_json::Value>, StoreError> {
         self.query_json(&format!(
             "SELECT id, report_id, window_hours, generated_at \
@@ -2169,6 +2605,14 @@ impl VcStore {
     // =========================================================================
 
     /// Record a redaction event
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_redaction_event(
         &self,
         machine_id: &str,
@@ -2195,6 +2639,10 @@ impl VcStore {
     }
 
     /// List recent redaction events
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_redaction_events(
         &self,
         machine_id: Option<&str>,
@@ -2216,6 +2664,10 @@ impl VcStore {
     }
 
     /// Get redaction summary (total redacted fields/bytes per collector)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn redaction_summary(&self) -> Result<Vec<serde_json::Value>, StoreError> {
         self.query_json(
             "SELECT collector, \
@@ -2225,7 +2677,7 @@ impl VcStore {
                     MAX(rules_version) as latest_rules_version \
              FROM redaction_events \
              GROUP BY collector \
-             ORDER BY total_fields DESC"
+             ORDER BY total_fields DESC",
         )
     }
 
@@ -2234,6 +2686,14 @@ impl VcStore {
     // =========================================================================
 
     /// Check if a content hash has already been ingested
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn has_ingest_record(&self, content_hash: &str) -> Result<bool, StoreError> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn
@@ -2247,6 +2707,14 @@ impl VcStore {
     }
 
     /// Record a successful ingest for future dedup
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn record_ingest(
         &self,
         bundle_id: &str,
@@ -2266,12 +2734,23 @@ impl VcStore {
         conn.execute(
             "INSERT INTO node_ingest_log (id, bundle_id, machine_id, collector, content_hash, row_count) \
              VALUES (?, ?, ?, ?, ?, ?)",
-            duckdb::params![next_id, bundle_id, machine_id, collector, content_hash, row_count as i64],
+            duckdb::params![
+                next_id,
+                bundle_id,
+                machine_id,
+                collector,
+                content_hash,
+                i64::try_from(row_count).unwrap_or(i64::MAX)
+            ],
         )?;
         Ok(())
     }
 
     /// List recent ingest records
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_ingest_records(
         &self,
         machine_id: Option<&str>,
@@ -2297,13 +2776,21 @@ impl VcStore {
     // =========================================================================
 
     /// List all user tables in the database (excludes internal tables)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query preparation or row decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn list_tables(&self) -> Result<Vec<String>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT table_name FROM duckdb_tables() \
              WHERE schema_name = 'main' \
              AND table_name NOT LIKE '\\_%' ESCAPE '\\' \
-             ORDER BY table_name"
+             ORDER BY table_name",
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut tables = Vec::new();
@@ -2314,6 +2801,10 @@ impl VcStore {
     }
 
     /// Export a single table as JSONL (one JSON object per line)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if export query execution fails.
     pub fn export_table_jsonl(
         &self,
         table: &str,
@@ -2333,7 +2824,7 @@ impl VcStore {
             conditions.push(format!("{col} <= '{until}'"));
         }
         if !conditions.is_empty() {
-            sql.push_str(&format!(" WHERE {}", conditions.join(" AND ")));
+            let _ = write!(sql, " WHERE {}", conditions.join(" AND "));
         }
 
         let rows = self.query_json(&sql)?;
@@ -2376,11 +2867,19 @@ impl VcStore {
     }
 
     /// Get row count for a table
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn table_row_count(&self, table: &str) -> Result<i64, StoreError> {
         self.query_scalar(&format!("SELECT COUNT(*) FROM \"{table}\""))
     }
 
     /// Build an export manifest (metadata about the export)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if table row-count queries fail.
     pub fn build_export_manifest(
         &self,
         tables: &[String],
@@ -2409,11 +2908,11 @@ impl VcStore {
     }
 
     /// Import JSONL data into a table (append mode)
-    pub fn import_table_jsonl(
-        &self,
-        table: &str,
-        lines: &[String],
-    ) -> Result<usize, StoreError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if JSON parsing fails for an input line.
+    pub fn import_table_jsonl(&self, table: &str, lines: &[String]) -> Result<usize, StoreError> {
         let mut imported = 0;
         for line in lines {
             if line.trim().is_empty() {
@@ -2423,7 +2922,7 @@ impl VcStore {
                 .map_err(|e| StoreError::QueryError(format!("JSON parse error: {e}")))?;
 
             match self.insert_json(table, &value) {
-                Ok(_) => imported += 1,
+                Ok(()) => imported += 1,
                 Err(e) => {
                     tracing::warn!(table, error = %e, "Skipping row during import");
                 }
@@ -2437,6 +2936,14 @@ impl VcStore {
     // =========================================================================
 
     /// Record an alert routing decision
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_routing_event(
         &self,
         alert_id: &str,
@@ -2463,6 +2970,10 @@ impl VcStore {
     }
 
     /// List routing events for an alert
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_routing_events(
         &self,
         alert_id: Option<&str>,
@@ -2484,12 +2995,14 @@ impl VcStore {
     }
 
     /// Count routing events by action type
-    pub fn routing_event_summary(
-        &self,
-    ) -> Result<Vec<serde_json::Value>, StoreError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
+    pub fn routing_event_summary(&self) -> Result<Vec<serde_json::Value>, StoreError> {
         self.query_json(
             "SELECT action, COUNT(*) AS count FROM alert_routing_events \
-             GROUP BY action ORDER BY count DESC"
+             GROUP BY action ORDER BY count DESC",
         )
     }
 
@@ -2497,6 +3010,15 @@ impl VcStore {
     // Resolution capture methods (playbook auto-generation)
     // =========================================================================
 
+    /// Insert a captured resolution event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if ID allocation or insert fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_resolution(
         &self,
         alert_type: &str,
@@ -2529,6 +3051,11 @@ impl VcStore {
         Ok(next_id)
     }
 
+    /// List captured resolutions with optional filtering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_resolutions(
         &self,
         alert_type: Option<&str>,
@@ -2556,14 +3083,22 @@ impl VcStore {
                 escape_sql_literal(oc),
                 limit
             ),
-            (None, None) => format!(
-                "SELECT * FROM resolutions ORDER BY captured_at DESC LIMIT {}",
-                limit
-            ),
+            (None, None) => {
+                format!("SELECT * FROM resolutions ORDER BY captured_at DESC LIMIT {limit}")
+            }
         };
         self.query_json(&sql)
     }
 
+    /// Count resolution records by alert type and outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn count_resolutions_by_type(
         &self,
         alert_type: &str,
@@ -2578,6 +3113,15 @@ impl VcStore {
         Ok(count)
     }
 
+    /// Return distinct alert types with successful resolutions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query preparation or row decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn distinct_resolution_alert_types(&self) -> Result<Vec<String>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -2595,6 +3139,16 @@ impl VcStore {
     // Playbook draft methods
     // =========================================================================
 
+    #[allow(clippy::too_many_arguments)]
+    /// Insert a pending playbook draft generated from captured resolutions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if insert execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn insert_playbook_draft(
         &self,
         draft_id: &str,
@@ -2628,6 +3182,11 @@ impl VcStore {
         Ok(())
     }
 
+    /// List playbook drafts with optional status filtering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution fails.
     pub fn list_playbook_drafts(
         &self,
         status: Option<&str>,
@@ -2641,14 +3200,20 @@ impl VcStore {
                 escape_sql_literal(s),
                 limit
             ),
-            None => format!(
-                "SELECT * FROM playbook_drafts ORDER BY created_at DESC LIMIT {}",
-                limit
-            ),
+            None => format!("SELECT * FROM playbook_drafts ORDER BY created_at DESC LIMIT {limit}"),
         };
         self.query_json(&sql)
     }
 
+    /// Fetch a single playbook draft by draft ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if query execution or JSON decoding fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn get_playbook_draft(
         &self,
         draft_id: &str,
@@ -2671,6 +3236,15 @@ impl VcStore {
         }
     }
 
+    /// Mark a pending playbook draft as approved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if update execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn approve_playbook_draft(
         &self,
         draft_id: &str,
@@ -2685,6 +3259,15 @@ impl VcStore {
         Ok(affected)
     }
 
+    /// Mark a pending playbook draft as rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if update execution fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn reject_playbook_draft(
         &self,
         draft_id: &str,
@@ -2696,26 +3279,34 @@ impl VcStore {
             [draft_id],
         )?;
         // Record rejection reason as description update if provided
-        if affected > 0 {
-            if let Some(reason) = reason {
-                let desc = format!("[Rejected] {reason}");
-                conn.execute(
-                    "UPDATE playbook_drafts SET description = ? WHERE draft_id = ?",
-                    [&desc, draft_id],
-                )?;
-            }
+        if affected > 0
+            && let Some(reason) = reason
+        {
+            let desc = format!("[Rejected] {reason}");
+            conn.execute(
+                "UPDATE playbook_drafts SET description = ? WHERE draft_id = ?",
+                [&desc, draft_id],
+            )?;
         }
         Ok(affected)
     }
 
+    /// Activate an approved playbook draft into a live guardian playbook.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the draft is invalid or activation writes fail.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database mutex is poisoned.
     pub fn activate_playbook_from_draft(
         &self,
         draft_id: &str,
     ) -> Result<Option<serde_json::Value>, StoreError> {
         let draft = self.get_playbook_draft(draft_id)?;
-        let draft = match draft {
-            Some(d) => d,
-            None => return Ok(None),
+        let Some(draft) = draft else {
+            return Ok(None);
         };
 
         let status = draft["status"].as_str().unwrap_or("");
@@ -2776,6 +3367,7 @@ fn json_value_to_sql(value: &serde_json::Value) -> Box<dyn duckdb::ToSql> {
     }
 }
 
+#[must_use]
 pub fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -2841,11 +3433,11 @@ mod tests {
         let store = VcStore::open_memory().unwrap();
         store
             .execute_batch(
-                r#"
+                r"
             CREATE TABLE batch_test (id INTEGER, value TEXT);
             INSERT INTO batch_test VALUES (1, 'first');
             INSERT INTO batch_test VALUES (2, 'second');
-        "#,
+        ",
             )
             .unwrap();
 
@@ -3354,7 +3946,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         // Array should be serialized as JSON string
         let tags_str = results[0]["tags"].as_str().unwrap();
-        assert!(tags_str.contains("a"));
+        assert!(tags_str.contains('a'));
     }
 
     // =============================================================================
@@ -3439,13 +4031,16 @@ mod tests {
             .execute_simple("CREATE TABLE test_float (id INTEGER, val DOUBLE)")
             .unwrap();
         store
-            .execute_simple("INSERT INTO test_float VALUES (1, 3.14)")
+            .execute_simple(&format!(
+                "INSERT INTO test_float VALUES (1, {})",
+                std::f64::consts::PI
+            ))
             .unwrap();
 
         let val: f64 = store
             .query_scalar("SELECT val FROM test_float WHERE id = 1")
             .unwrap();
-        assert!((val - 3.14).abs() < f64::EPSILON);
+        assert!((val - std::f64::consts::PI).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -3475,12 +4070,12 @@ mod tests {
         let store = VcStore::open_memory().unwrap();
         store
             .execute_batch(
-                r#"
+                r"
             CREATE TABLE test_multi (id INTEGER, name TEXT);
             INSERT INTO test_multi VALUES (1, 'a');
             INSERT INTO test_multi VALUES (2, 'b');
             INSERT INTO test_multi VALUES (3, 'c');
-        "#,
+        ",
             )
             .unwrap();
 
@@ -3504,12 +4099,12 @@ mod tests {
         // Create a test table with primary key
         store
             .execute_batch(
-                r#"
+                r"
             CREATE TABLE test_upsert (
                 id TEXT PRIMARY KEY,
                 value INTEGER
             );
-        "#,
+        ",
             )
             .unwrap();
 
@@ -3542,12 +4137,12 @@ mod tests {
         let store = VcStore::open_memory().unwrap();
         store
             .execute_batch(
-                r#"
+                r"
             CREATE TABLE test_upsert_empty (
                 id TEXT PRIMARY KEY,
                 value INTEGER
             );
-        "#,
+        ",
             )
             .unwrap();
 
@@ -3562,12 +4157,12 @@ mod tests {
         let store = VcStore::open_memory().unwrap();
         store
             .execute_batch(
-                r#"
+                r"
             CREATE TABLE test_upsert_mixed (
                 id TEXT PRIMARY KEY,
                 value INTEGER
             );
-        "#,
+        ",
             )
             .unwrap();
 
@@ -3602,8 +4197,7 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("Database error") || msg.contains("error"),
-            "Error: {}",
-            msg
+            "Error: {msg}"
         );
     }
 
@@ -3631,7 +4225,7 @@ mod tests {
     #[test]
     fn test_store_error_debug() {
         let err = StoreError::QueryError("test".to_string());
-        let debug = format!("{:?}", err);
+        let debug = format!("{err:?}");
         assert!(debug.contains("QueryError"));
         assert!(debug.contains("test"));
     }
@@ -3663,7 +4257,7 @@ mod tests {
 
     #[test]
     fn test_json_value_to_sql_float() {
-        let val = serde_json::json!(3.14);
+        let val = serde_json::json!(std::f64::consts::PI);
         let _boxed = json_value_to_sql(&val);
     }
 
@@ -3708,14 +4302,14 @@ mod tests {
         // Create table
         store
             .execute_batch(
-                r#"
+                r"
             CREATE TABLE workflow_test (
                 machine_id TEXT PRIMARY KEY,
                 hostname TEXT,
                 status TEXT,
                 cpu_pct DOUBLE
             );
-        "#,
+        ",
             )
             .unwrap();
 
@@ -4838,7 +5432,8 @@ mod tests {
     fn test_import_table_jsonl() {
         let store = VcStore::open_memory().unwrap();
         let lines = vec![
-            r#"{"machine_id": "m-imp-1", "hostname": "import-host", "status": "online"}"#.to_string(),
+            r#"{"machine_id": "m-imp-1", "hostname": "import-host", "status": "online"}"#
+                .to_string(),
         ];
 
         let imported = store.import_table_jsonl("machines", &lines).unwrap();
@@ -4860,7 +5455,7 @@ mod tests {
         let store = VcStore::open_memory().unwrap();
         let lines = vec![
             r#"{"machine_id": "m-1", "hostname": "h1", "status": "online"}"#.to_string(),
-            "".to_string(),
+            String::new(),
             "  ".to_string(),
         ];
 
@@ -4878,9 +5473,7 @@ mod tests {
             .unwrap();
 
         // Export
-        let lines = store
-            .export_table_jsonl("incidents", None, None)
-            .unwrap();
+        let lines = store.export_table_jsonl("incidents", None, None).unwrap();
         assert_eq!(lines.len(), 1);
 
         // Create a fresh store and import

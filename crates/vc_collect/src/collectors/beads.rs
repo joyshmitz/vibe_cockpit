@@ -236,6 +236,7 @@ impl Collector for BeadsCollector {
         false // Stateless snapshot
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut rows = vec![];

@@ -166,14 +166,13 @@ impl Collector for CaamCollector {
                     }
                     Err(e) => {
                         warnings.push(Warning::warn(format!(
-                            "Failed to parse caam limits output: {}",
-                            e
+                            "Failed to parse caam limits output: {e}",
                         )));
                     }
                 }
             }
             Err(e) => {
-                warnings.push(Warning::warn(format!("Failed to run caam limits: {}", e)));
+                warnings.push(Warning::warn(format!("Failed to run caam limits: {e}")));
             }
         }
 
@@ -206,14 +205,13 @@ impl Collector for CaamCollector {
                     }
                     Err(e) => {
                         warnings.push(Warning::warn(format!(
-                            "Failed to parse caam status output: {}",
-                            e
+                            "Failed to parse caam status output: {e}",
                         )));
                     }
                 }
             }
             Err(e) => {
-                warnings.push(Warning::warn(format!("Failed to run caam status: {}", e)));
+                warnings.push(Warning::warn(format!("Failed to run caam status: {e}")));
             }
         }
 
@@ -263,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_default_impl() {
-        let collector = CaamCollector::default();
+        let collector = CaamCollector;
         assert_eq!(collector.name(), "caam");
     }
 
@@ -349,12 +347,12 @@ mod tests {
         let cc = &data.tools[0];
         assert_eq!(cc.tool, "claude-code");
         assert_eq!(cc.active_profile, Some("jeff@email.com".to_string()));
-        assert_eq!(cc.health_score, 0.85);
+        assert!((cc.health_score - 0.85).abs() < f64::EPSILON);
         assert_eq!(cc.provider, Some("claude".to_string()));
 
         let codex = &data.tools[1];
         assert_eq!(codex.tool, "codex");
-        assert_eq!(codex.health_score, 0.60);
+        assert!((codex.health_score - 0.60).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -389,7 +387,7 @@ mod tests {
         let data: CaamLimitsOutput = serde_json::from_str(json).unwrap();
         let profile = &data.providers[0].profiles[0];
         assert_eq!(profile.name, "test@example.com");
-        assert_eq!(profile.utilization_percent, 0.0); // Default
+        assert!(profile.utilization_percent.abs() < f64::EPSILON); // Default
         assert!(!profile.is_active); // Default false
         assert!(profile.resets_at.is_none());
         assert!(profile.priority.is_none());

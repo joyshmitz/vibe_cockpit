@@ -4,6 +4,7 @@
 //! into a concise daily/weekly summary.
 
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use vc_store::VcStore;
 
 // ============================================================================
@@ -45,6 +46,7 @@ pub struct DigestSummary {
 // ============================================================================
 
 /// Generate a digest report from the store
+#[must_use]
 pub fn generate_digest(store: &VcStore, window_hours: u32) -> DigestReport {
     let now = chrono::Utc::now();
     let report_id = format!("digest-{}h-{}", window_hours, now.timestamp());
@@ -83,31 +85,37 @@ fn build_fleet_section(store: &VcStore, summary: &mut DigestSummary) -> DigestSe
     // Count machines
     let machines: usize = store
         .query_scalar::<i64>("SELECT COUNT(DISTINCT machine_id) FROM machine_registry")
-        .unwrap_or(0) as usize;
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
     summary.total_machines = machines;
     items.push(format!("Total machines: {machines}"));
 
     // Health scores
     let healthy: usize = store
-        .query_scalar::<i64>(
-            "SELECT COUNT(*) FROM health_scores WHERE overall_score >= 80"
-        )
-        .unwrap_or(0) as usize;
+        .query_scalar::<i64>("SELECT COUNT(*) FROM health_scores WHERE overall_score >= 80")
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
     let degraded: usize = store
         .query_scalar::<i64>(
-            "SELECT COUNT(*) FROM health_scores WHERE overall_score < 80 AND overall_score >= 50"
+            "SELECT COUNT(*) FROM health_scores WHERE overall_score < 80 AND overall_score >= 50",
         )
-        .unwrap_or(0) as usize;
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
     let critical: usize = store
-        .query_scalar::<i64>(
-            "SELECT COUNT(*) FROM health_scores WHERE overall_score < 50"
-        )
-        .unwrap_or(0) as usize;
+        .query_scalar::<i64>("SELECT COUNT(*) FROM health_scores WHERE overall_score < 50")
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
 
     summary.machines_healthy = healthy;
     summary.machines_degraded = degraded + critical;
 
-    items.push(format!("Healthy: {healthy}, Degraded: {degraded}, Critical: {critical}"));
+    items.push(format!(
+        "Healthy: {healthy}, Degraded: {degraded}, Critical: {critical}"
+    ));
 
     DigestSection {
         title: "Fleet Overview".to_string(),
@@ -119,10 +127,10 @@ fn build_alert_section(store: &VcStore, summary: &mut DigestSummary) -> DigestSe
     let mut items = Vec::new();
 
     let open: usize = store
-        .query_scalar::<i64>(
-            "SELECT COUNT(*) FROM alert_history WHERE status = 'open'"
-        )
-        .unwrap_or(0) as usize;
+        .query_scalar::<i64>("SELECT COUNT(*) FROM alert_history WHERE status = 'open'")
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
     summary.open_alerts = open;
     items.push(format!("Open alerts: {open}"));
 
@@ -130,7 +138,7 @@ fn build_alert_section(store: &VcStore, summary: &mut DigestSummary) -> DigestSe
     let by_severity = store
         .query_json(
             "SELECT severity, COUNT(*) as cnt FROM alert_history \
-             GROUP BY severity ORDER BY cnt DESC"
+             GROUP BY severity ORDER BY cnt DESC",
         )
         .unwrap_or_default();
 
@@ -150,15 +158,15 @@ fn build_collector_section(store: &VcStore, summary: &mut DigestSummary) -> Dige
     let mut items = Vec::new();
 
     let healthy: usize = store
-        .query_scalar::<i64>(
-            "SELECT COUNT(*) FROM collector_health WHERE status = 'healthy'"
-        )
-        .unwrap_or(0) as usize;
+        .query_scalar::<i64>("SELECT COUNT(*) FROM collector_health WHERE status = 'healthy'")
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
     let stale: usize = store
-        .query_scalar::<i64>(
-            "SELECT COUNT(*) FROM collector_health WHERE status = 'stale'"
-        )
-        .unwrap_or(0) as usize;
+        .query_scalar::<i64>("SELECT COUNT(*) FROM collector_health WHERE status = 'stale'")
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
 
     summary.collectors_healthy = healthy;
     summary.collectors_stale = stale;
@@ -188,7 +196,8 @@ fn build_events_section(store: &VcStore, window_hours: u32) -> DigestSection {
         items.push("No notable events in this window".to_string());
     } else {
         for event in &events {
-            if let (Some(etype), Some(cnt)) = (event["event_type"].as_str(), event["cnt"].as_i64()) {
+            if let (Some(etype), Some(cnt)) = (event["event_type"].as_str(), event["cnt"].as_i64())
+            {
                 items.push(format!("{etype}: {cnt} events"));
             }
         }
@@ -205,28 +214,39 @@ fn build_events_section(store: &VcStore, window_hours: u32) -> DigestSection {
 // ============================================================================
 
 /// Render a digest report as Markdown
+#[must_use]
 pub fn render_markdown(report: &DigestReport) -> String {
     let mut md = String::new();
 
-    md.push_str(&format!("# Vibe Cockpit Digest ({}h window)\n\n", report.window_hours));
-    md.push_str(&format!("Generated: {}\n\n", report.generated_at));
+    let _ = write!(
+        md,
+        "# Vibe Cockpit Digest ({}h window)\n\n",
+        report.window_hours
+    );
+    let _ = write!(md, "Generated: {}\n\n", report.generated_at);
 
     // Summary box
     md.push_str("## Summary\n\n");
-    md.push_str(&format!("| Metric | Value |\n"));
+    md.push_str("| Metric | Value |\n");
     md.push_str("| --- | --- |\n");
-    md.push_str(&format!("| Machines | {} total, {} healthy |\n",
-        report.summary.total_machines, report.summary.machines_healthy));
-    md.push_str(&format!("| Alerts | {} open |\n", report.summary.open_alerts));
-    md.push_str(&format!("| Collectors | {} healthy, {} stale |\n",
-        report.summary.collectors_healthy, report.summary.collectors_stale));
+    let _ = writeln!(
+        md,
+        "| Machines | {} total, {} healthy |",
+        report.summary.total_machines, report.summary.machines_healthy
+    );
+    let _ = writeln!(md, "| Alerts | {} open |", report.summary.open_alerts);
+    let _ = writeln!(
+        md,
+        "| Collectors | {} healthy, {} stale |",
+        report.summary.collectors_healthy, report.summary.collectors_stale
+    );
     md.push('\n');
 
     // Sections
     for section in &report.sections {
-        md.push_str(&format!("## {}\n\n", section.title));
+        let _ = write!(md, "## {}\n\n", section.title);
         for item in &section.items {
-            md.push_str(&format!("- {item}\n"));
+            let _ = writeln!(md, "- {item}");
         }
         md.push('\n');
     }
@@ -364,7 +384,9 @@ mod tests {
         let json = serde_json::to_string(&report.summary).unwrap();
         let md = render_markdown(&report);
 
-        store.insert_digest_report(&report.report_id, 24, &json, &md).unwrap();
+        store
+            .insert_digest_report(&report.report_id, 24, &json, &md)
+            .unwrap();
 
         let retrieved = store.get_digest_report(&report.report_id).unwrap();
         assert!(retrieved.is_some());
@@ -378,8 +400,12 @@ mod tests {
         let r1 = generate_digest(&store, 24);
         let r2 = generate_digest(&store, 168);
 
-        store.insert_digest_report(&r1.report_id, 24, "{}", "# daily").unwrap();
-        store.insert_digest_report(&r2.report_id, 168, "{}", "# weekly").unwrap();
+        store
+            .insert_digest_report(&r1.report_id, 24, "{}", "# daily")
+            .unwrap();
+        store
+            .insert_digest_report(&r2.report_id, 168, "{}", "# weekly")
+            .unwrap();
 
         let reports = store.list_digest_reports(10).unwrap();
         assert_eq!(reports.len(), 2);

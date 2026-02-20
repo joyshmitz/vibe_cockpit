@@ -140,6 +140,7 @@ pub struct NtmCollector;
 
 impl NtmCollector {
     /// Create a new ntm collector
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -169,6 +170,7 @@ impl Collector for NtmCollector {
         false // Stateless - each poll is a fresh snapshot
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
@@ -188,11 +190,10 @@ impl Collector for NtmCollector {
             Ok(out) => out,
             Err(e) => {
                 warnings.push(Warning::error(format!(
-                    "Failed to run ntm --robot-status: {}",
-                    e
+                    "Failed to run ntm --robot-status: {e}"
                 )));
                 return Ok(CollectResult::empty()
-                    .with_warning(Warning::error(format!("ntm command failed: {}", e)))
+                    .with_warning(Warning::error(format!("ntm command failed: {e}")))
                     .with_duration(start.elapsed()));
             }
         };
@@ -202,11 +203,11 @@ impl Collector for NtmCollector {
             Ok(s) => s,
             Err(e) => {
                 warnings.push(
-                    Warning::error(format!("Failed to parse ntm output: {}", e))
+                    Warning::error(format!("Failed to parse ntm output: {e}"))
                         .with_context(output.chars().take(500).collect::<String>()),
                 );
                 return Ok(CollectResult::empty()
-                    .with_warning(Warning::error(format!("JSON parse error: {}", e)))
+                    .with_warning(Warning::error(format!("JSON parse error: {e}")))
                     .with_duration(start.elapsed()));
             }
         };
@@ -358,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_default_impl() {
-        let collector = NtmCollector::default();
+        let collector = NtmCollector;
         assert_eq!(collector.name(), "ntm");
     }
 
@@ -430,7 +431,7 @@ mod tests {
         let agent = &status.sessions[0].agents[0];
         assert_eq!(agent.agent_type, "claude");
         assert_eq!(agent.context_tokens, Some(122));
-        assert_eq!(agent.context_limit, Some(200000));
+        assert_eq!(agent.context_limit, Some(200_000));
 
         let summary = status.summary.unwrap();
         assert_eq!(summary.total_sessions, 1);
@@ -573,7 +574,7 @@ mod tests {
             memory_mb: Some(100),
             output_lines_since_last: 5,
             context_tokens: Some(1000),
-            context_limit: Some(200000),
+            context_limit: Some(200_000),
             context_percent: Some(0.5),
             context_model: Some("claude-opus-4-5".to_string()),
         };

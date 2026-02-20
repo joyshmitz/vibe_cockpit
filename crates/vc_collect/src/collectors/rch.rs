@@ -114,6 +114,7 @@ pub struct RchCollector {
 
 impl RchCollector {
     /// Create a new collector with the default JSONL path
+    #[must_use]
     pub fn new() -> Self {
         Self {
             jsonl_path: DEFAULT_JSONL_PATH.to_string(),
@@ -129,10 +130,10 @@ impl RchCollector {
 
     /// Expand ~ to home directory in the path
     fn expand_path(&self) -> String {
-        if self.jsonl_path.starts_with("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                return self.jsonl_path.replacen("~", &home, 1);
-            }
+        if self.jsonl_path.starts_with("~/")
+            && let Ok(home) = std::env::var("HOME")
+        {
+            return self.jsonl_path.replacen('~', &home, 1);
         }
         self.jsonl_path.clone()
     }
@@ -162,6 +163,7 @@ impl Collector for RchCollector {
         true
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn collect(&self, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
@@ -176,8 +178,7 @@ impl Collector for RchCollector {
         let file_stat = ctx.executor.stat(&jsonl_path, ctx.timeout).await?;
         if !file_stat.exists {
             warnings.push(Warning::info(format!(
-                "rch JSONL file not found: {}",
-                jsonl_path
+                "rch JSONL file not found: {jsonl_path}",
             )));
             return Ok(CollectResult::empty()
                 .with_warning(Warning::info("JSONL file not found"))
@@ -189,12 +190,12 @@ impl Collector for RchCollector {
 
         // Check for file rotation (inode changed)
         let current_inode = file_stat.inode;
-        let start_offset = if current_inode != last_inode {
+        let start_offset = if current_inode == last_inode {
+            last_offset
+        } else {
             // File was rotated, start from beginning
             warnings.push(Warning::info("JSONL file rotated, starting from beginning"));
             0
-        } else {
-            last_offset
         };
 
         // Read new lines from the file
@@ -244,7 +245,7 @@ impl Collector for RchCollector {
                     }));
                 }
                 Err(e) => {
-                    warnings.push(Warning::warn(format!("Failed to parse JSONL line: {}", e)));
+                    warnings.push(Warning::warn(format!("Failed to parse JSONL line: {e}")));
                 }
             }
 
@@ -277,7 +278,7 @@ impl Collector for RchCollector {
                 }
             }
             Err(e) => {
-                warnings.push(Warning::warn(format!("Failed to get rch status: {}", e)));
+                warnings.push(Warning::warn(format!("Failed to get rch status: {e}")));
             }
         }
 
@@ -475,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_parse_status_empty() {
-        let json = r#"{}"#;
+        let json = r"{}";
 
         let status: RchStatus = serde_json::from_str(json).unwrap();
         assert_eq!(status.queue_depth, 0);

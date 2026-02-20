@@ -67,7 +67,7 @@ impl Default for SshRunnerConfig {
     fn default() -> Self {
         Self {
             connect_timeout: Duration::from_secs(30),
-            command_timeout: Duration::from_secs(60),
+            command_timeout: Duration::from_mins(1),
             max_retries: 3,
             keepalive_interval: Duration::from_secs(30),
             max_connections: 10,
@@ -85,6 +85,7 @@ pub struct CommandOutput {
 
 impl CommandOutput {
     /// Check if command succeeded (exit code 0)
+    #[must_use]
     pub fn success(&self) -> bool {
         self.exit_code == 0
     }
@@ -100,7 +101,7 @@ struct SshSession {
 }
 
 impl SshSession {
-    async fn is_alive(&self) -> bool {
+    fn is_alive(&self) -> bool {
         // Check if the session is still connected
         !self.handle.is_closed()
     }
@@ -131,11 +132,13 @@ pub struct SshRunner {
 
 impl SshRunner {
     /// Create a new SSH runner with default config
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(SshRunnerConfig::default())
     }
 
     /// Create a new SSH runner with custom config
+    #[must_use]
     pub fn with_config(config: SshRunnerConfig) -> Self {
         Self {
             connections: DashMap::new(),
@@ -144,6 +147,10 @@ impl SshRunner {
     }
 
     /// Execute a command on a remote machine
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connection/authentication fails or the command cannot be executed.
     #[instrument(skip(self, machine), fields(machine_id = %machine.machine_id))]
     pub async fn exec(&self, machine: &Machine, cmd: &str) -> Result<CommandOutput, SshError> {
         let session = self.get_or_connect(machine).await?;
@@ -153,6 +160,10 @@ impl SshRunner {
     }
 
     /// Execute command with custom timeout
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command fails or if the timeout is reached.
     pub async fn exec_timeout(
         &self,
         machine: &Machine,
@@ -166,6 +177,10 @@ impl SshRunner {
     }
 
     /// Transfer file from remote to local
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the remote command fails or local write fails.
     #[instrument(skip(self, machine), fields(machine_id = %machine.machine_id))]
     pub async fn fetch_file(
         &self,
@@ -190,6 +205,10 @@ impl SshRunner {
     }
 
     /// Transfer file from local to remote
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if transfer or remote write fails.
     #[instrument(skip(self, machine, content), fields(machine_id = %machine.machine_id))]
     pub async fn push_file(
         &self,
@@ -218,6 +237,10 @@ impl SshRunner {
     }
 
     /// Check if connection to machine is alive
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for non-timeout SSH failures.
     #[instrument(skip(self, machine), fields(machine_id = %machine.machine_id))]
     pub async fn ping(&self, machine: &Machine) -> Result<bool, SshError> {
         match self
@@ -231,16 +254,17 @@ impl SshRunner {
     }
 
     /// Close all connections in the pool
-    pub async fn close_all(&self) {
+    pub fn close_all(&self) {
         self.connections.clear();
     }
 
     /// Close connection to specific machine
-    pub async fn close(&self, machine_id: &str) {
+    pub fn close(&self, machine_id: &str) {
         self.connections.remove(machine_id);
     }
 
     /// Get pool statistics
+    #[must_use]
     pub fn pool_stats(&self) -> PoolStats {
         PoolStats {
             active_connections: self.connections.len(),
@@ -253,7 +277,7 @@ impl SshRunner {
         // Check if we have an existing connection
         if let Some(session) = self.connections.get(&machine.machine_id) {
             let session_guard = session.lock().await;
-            if session_guard.is_alive().await {
+            if session_guard.is_alive() {
                 drop(session_guard);
                 return Ok(session.clone());
             }
@@ -356,12 +380,10 @@ impl SshRunner {
         let key_path = expand_tilde(key_path);
 
         let secret_key = russh_keys::load_secret_key(&key_path, None)
-            .map_err(|e| SshError::KeyError(format!("Failed to load key {}: {}", key_path, e)))?;
+            .map_err(|e| SshError::KeyError(format!("Failed to load key {key_path}: {e}")))?;
 
         let key_with_alg = russh_keys::key::PrivateKeyWithHashAlg::new(Arc::new(secret_key), None)
-            .map_err(|e| {
-                SshError::KeyError(format!("Failed to prepare key {}: {}", key_path, e))
-            })?;
+            .map_err(|e| SshError::KeyError(format!("Failed to prepare key {key_path}: {e}")))?;
 
         handle
             .authenticate_publickey(user, key_with_alg)
@@ -374,7 +396,7 @@ impl SshRunner {
 
     /// Authenticate using default SSH keys
     ///
-    /// Tries common key locations in order: id_ed25519, id_rsa, id_ecdsa
+    /// Tries common key locations in order: `id_ed25519`, `id_rsa`, `id_ecdsa`
     async fn authenticate_with_default_keys(
         &self,
         handle: &mut client::Handle<SshHandler>,
@@ -382,7 +404,7 @@ impl SshRunner {
     ) -> Result<bool, SshError> {
         // Try default key locations
         for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
-            let key_path = format!("~/.ssh/{}", key_name);
+            let key_path = format!("~/.ssh/{key_name}");
             if let Ok(true) = self.authenticate_with_key(handle, user, &key_path).await {
                 return Ok(true);
             }
@@ -457,10 +479,10 @@ pub struct PoolStats {
 
 /// Expand ~ to home directory
 fn expand_tilde(path: &str) -> String {
-    if path.starts_with("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return path.replacen("~", &home, 1);
-        }
+    if path.starts_with("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return path.replacen('~', &home, 1);
     }
     path.to_string()
 }
@@ -558,7 +580,7 @@ mod tests {
     fn test_ssh_runner_config_default() {
         let config = SshRunnerConfig::default();
         assert_eq!(config.connect_timeout, Duration::from_secs(30));
-        assert_eq!(config.command_timeout, Duration::from_secs(60));
+        assert_eq!(config.command_timeout, Duration::from_mins(1));
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.max_connections, 10);
     }
@@ -651,7 +673,7 @@ mod tests {
     #[tokio::test]
     async fn test_close_all() {
         let runner = SshRunner::new();
-        runner.close_all().await;
+        runner.close_all();
         assert_eq!(runner.pool_stats().active_connections, 0);
     }
 }

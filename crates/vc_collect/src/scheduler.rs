@@ -64,6 +64,7 @@ pub struct CollectorState {
 }
 
 impl CollectorState {
+    #[must_use]
     pub fn new(machine_id: &str, collector: &str, default_interval: u32) -> Self {
         Self {
             machine_id: machine_id.to_string(),
@@ -109,6 +110,7 @@ pub enum ScheduleReason {
 }
 
 impl ScheduleReason {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
             Self::Default => "default",
@@ -149,6 +151,7 @@ pub struct AdaptiveScheduler {
 
 impl AdaptiveScheduler {
     /// Create a new scheduler with default config
+    #[must_use]
     pub fn new(config: AdaptiveConfig) -> Self {
         Self {
             config,
@@ -159,6 +162,7 @@ impl AdaptiveScheduler {
     }
 
     /// Create with store for decision logging
+    #[must_use]
     pub fn with_store(config: AdaptiveConfig, store: Arc<VcStore>) -> Self {
         Self {
             config,
@@ -171,11 +175,9 @@ impl AdaptiveScheduler {
     /// Get or create state for a collector
     fn get_state(&mut self, machine_id: &str, collector: &str) -> &mut CollectorState {
         let key = format!("{machine_id}:{collector}");
-        self.states
-            .entry(key)
-            .or_insert_with(|| {
-                CollectorState::new(machine_id, collector, self.config.default_interval_secs)
-            })
+        self.states.entry(key).or_insert_with(|| {
+            CollectorState::new(machine_id, collector, self.config.default_interval_secs)
+        })
     }
 
     /// Record a successful poll
@@ -235,6 +237,7 @@ impl AdaptiveScheduler {
     }
 
     /// Check if a machine has active profiling
+    #[must_use]
     pub fn active_profiling(&self, machine_id: &str) -> Option<&ProfilingSession> {
         self.profiling_sessions
             .get(machine_id)
@@ -242,83 +245,88 @@ impl AdaptiveScheduler {
     }
 
     /// Calculate the next poll interval for a collector
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
     pub fn compute_interval(&mut self, machine_id: &str, collector: &str) -> ScheduleDecision {
         // 1. Check profiling override
-        if let Some(session) = self.profiling_sessions.get(machine_id) {
-            if session.remaining_secs > 0 {
-                let decision = ScheduleDecision {
-                    machine_id: machine_id.to_string(),
-                    collector: collector.to_string(),
-                    interval_secs: session.interval_secs,
-                    reason: ScheduleReason::ProfilingBurst,
-                };
-                self.log_decision(&decision);
-                return decision;
-            }
+        if let Some(session) = self.profiling_sessions.get(machine_id)
+            && session.remaining_secs > 0
+        {
+            let decision = ScheduleDecision {
+                machine_id: machine_id.to_string(),
+                collector: collector.to_string(),
+                interval_secs: session.interval_secs,
+                reason: ScheduleReason::ProfilingBurst,
+            };
+            self.log_decision(&decision);
+            return decision;
         }
 
         let key = format!("{machine_id}:{collector}");
         let state = self.states.get(&key);
 
         // 2. Check quarantine
-        if let Some(state) = state {
-            if state.quarantined {
-                let decision = ScheduleDecision {
-                    machine_id: machine_id.to_string(),
-                    collector: collector.to_string(),
-                    interval_secs: self.config.quarantine_duration_secs,
-                    reason: ScheduleReason::Quarantined,
-                };
-                self.log_decision(&decision);
-                return decision;
-            }
+        if let Some(state) = state
+            && state.quarantined
+        {
+            let decision = ScheduleDecision {
+                machine_id: machine_id.to_string(),
+                collector: collector.to_string(),
+                interval_secs: self.config.quarantine_duration_secs,
+                reason: ScheduleReason::Quarantined,
+            };
+            self.log_decision(&decision);
+            return decision;
         }
 
         // 3. Check failure backoff
-        if let Some(state) = state {
-            if state.consecutive_failures > 0 {
-                let backoff = self.config.default_interval_secs as f64
-                    * self.config.backoff_multiplier.powi(state.consecutive_failures as i32);
-                let interval = (backoff as u32).min(self.config.max_interval_secs);
-                let decision = ScheduleDecision {
-                    machine_id: machine_id.to_string(),
-                    collector: collector.to_string(),
-                    interval_secs: interval,
-                    reason: ScheduleReason::FailureBackoff,
-                };
-                self.log_decision(&decision);
-                return decision;
-            }
+        if let Some(state) = state
+            && state.consecutive_failures > 0
+        {
+            let exponent = i32::try_from(state.consecutive_failures).unwrap_or(i32::MAX);
+            let backoff = f64::from(self.config.default_interval_secs)
+                * self.config.backoff_multiplier.powi(exponent);
+            let interval = (backoff as u32).min(self.config.max_interval_secs);
+            let decision = ScheduleDecision {
+                machine_id: machine_id.to_string(),
+                collector: collector.to_string(),
+                interval_secs: interval,
+                reason: ScheduleReason::FailureBackoff,
+            };
+            self.log_decision(&decision);
+            return decision;
         }
 
         // 4. Check active alerts (shorter interval)
-        if let Some(state) = state {
-            if state.has_active_alert {
-                let decision = ScheduleDecision {
-                    machine_id: machine_id.to_string(),
-                    collector: collector.to_string(),
-                    interval_secs: self.config.min_interval_secs,
-                    reason: ScheduleReason::AlertResponse,
-                };
-                self.log_decision(&decision);
-                return decision;
-            }
+        if let Some(state) = state
+            && state.has_active_alert
+        {
+            let decision = ScheduleDecision {
+                machine_id: machine_id.to_string(),
+                collector: collector.to_string(),
+                interval_secs: self.config.min_interval_secs,
+                reason: ScheduleReason::AlertResponse,
+            };
+            self.log_decision(&decision);
+            return decision;
         }
 
         // 5. Check freshness (stale → poll sooner)
-        if let Some(state) = state {
-            if let Some(freshness) = state.freshness_secs {
-                if freshness > (self.config.default_interval_secs * 3) as f64 {
-                    let decision = ScheduleDecision {
-                        machine_id: machine_id.to_string(),
-                        collector: collector.to_string(),
-                        interval_secs: self.config.min_interval_secs,
-                        reason: ScheduleReason::FreshnessRecovery,
-                    };
-                    self.log_decision(&decision);
-                    return decision;
-                }
-            }
+        if let Some(state) = state
+            && let Some(freshness) = state.freshness_secs
+            && freshness > f64::from(self.config.default_interval_secs * 3)
+        {
+            let decision = ScheduleDecision {
+                machine_id: machine_id.to_string(),
+                collector: collector.to_string(),
+                interval_secs: self.config.min_interval_secs,
+                reason: ScheduleReason::FreshnessRecovery,
+            };
+            self.log_decision(&decision);
+            return decision;
         }
 
         // 6. Default interval
@@ -335,13 +343,14 @@ impl AdaptiveScheduler {
     /// Log a decision to the store
     fn log_decision(&self, decision: &ScheduleDecision) {
         if let Some(ref store) = self.store {
+            let interval_i32 = i32::try_from(decision.interval_secs).unwrap_or(i32::MAX);
             let reason_json =
                 serde_json::to_string(&serde_json::json!({"reason": decision.reason.as_str()}))
                     .unwrap_or_default();
             let _ = store.insert_poll_decision(
                 &decision.machine_id,
                 &decision.collector,
-                decision.interval_secs as i32,
+                interval_i32,
                 Some(&reason_json),
             );
         }

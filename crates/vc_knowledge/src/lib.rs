@@ -1,7 +1,7 @@
-//! vc_knowledge - Knowledge base for Vibe Cockpit
+//! `vc_knowledge` - Knowledge base for Vibe Cockpit
 //!
 //! This crate provides:
-//! - Knowledge entry storage (solutions, patterns, prompts, debug_logs)
+//! - Knowledge entry storage (solutions, patterns, prompts, `debug_logs`)
 //! - Feedback tracking for usefulness scoring
 //! - Search capabilities (keyword-based)
 //! - Integration with agent sessions
@@ -52,6 +52,7 @@ pub enum EntryType {
 }
 
 impl EntryType {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             EntryType::Solution => "solution",
@@ -92,6 +93,7 @@ pub enum FeedbackType {
 }
 
 impl FeedbackType {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             FeedbackType::Helpful => "helpful",
@@ -135,6 +137,7 @@ pub struct KnowledgeEntry {
 
 impl KnowledgeEntry {
     /// Create a new knowledge entry
+    #[must_use]
     pub fn new(
         entry_type: EntryType,
         title: impl Into<String>,
@@ -159,18 +162,21 @@ impl KnowledgeEntry {
     }
 
     /// Set summary
+    #[must_use]
     pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
         self.summary = Some(summary.into());
         self
     }
 
     /// Set source session
+    #[must_use]
     pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
         self.source_session_id = Some(session_id.into());
         self
     }
 
     /// Set source file and optional line range
+    #[must_use]
     pub fn with_source(mut self, file: impl Into<String>, lines: Option<String>) -> Self {
         self.source_file = Some(file.into());
         self.source_lines = lines;
@@ -178,12 +184,17 @@ impl KnowledgeEntry {
     }
 
     /// Set tags
+    #[must_use]
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
 
     /// Validate the entry
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KnowledgeError::ValidationError`] when the title or content is empty.
     pub fn validate(&self) -> Result<(), KnowledgeError> {
         if self.title.trim().is_empty() {
             return Err(KnowledgeError::ValidationError(
@@ -211,6 +222,7 @@ pub struct KnowledgeFeedback {
 }
 
 impl KnowledgeFeedback {
+    #[must_use]
     pub fn new(entry_id: i64, feedback_type: FeedbackType) -> Self {
         Self {
             id: None,
@@ -222,11 +234,13 @@ impl KnowledgeFeedback {
         }
     }
 
+    #[must_use]
     pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
         self
     }
 
+    #[must_use]
     pub fn with_comment(mut self, comment: impl Into<String>) -> Self {
         self.comment = Some(comment.into());
         self
@@ -250,6 +264,7 @@ pub struct SearchOptions {
 }
 
 impl SearchOptions {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             limit: 20,
@@ -257,16 +272,19 @@ impl SearchOptions {
         }
     }
 
+    #[must_use]
     pub fn with_type(mut self, entry_type: EntryType) -> Self {
         self.entry_type = Some(entry_type);
         self
     }
 
+    #[must_use]
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
 
+    #[must_use]
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit;
         self
@@ -280,21 +298,26 @@ pub struct KnowledgeStore {
 
 impl KnowledgeStore {
     /// Create a new knowledge store
+    #[must_use]
     pub fn new(store: Arc<VcStore>) -> Self {
         Self { store }
     }
 
     /// Insert a new knowledge entry
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation fails or the database insert fails.
     pub fn insert(&self, entry: &KnowledgeEntry) -> Result<i64, KnowledgeError> {
         entry.validate()?;
 
         let tags_json = serde_json::to_string(&entry.tags)?;
-        let sql = r#"
+        let sql = r"
             INSERT INTO knowledge_entries
             (entry_type, title, summary, content, source_session_id, source_file, source_lines, tags, created_at, usefulness_score, view_count, applied_count)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
-        "#;
+        ";
 
         let conn = self.store.connection();
         let conn_guard = conn.lock().map_err(|e| {
@@ -324,6 +347,10 @@ impl KnowledgeStore {
     }
 
     /// Get an entry by ID
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KnowledgeError::NotFound`] when no entry exists for the given ID.
     pub fn get(&self, id: i64) -> Result<KnowledgeEntry, KnowledgeError> {
         let sql = "SELECT * FROM knowledge_entries WHERE id = ?";
         let conn = self.store.connection();
@@ -332,11 +359,15 @@ impl KnowledgeStore {
         })?;
 
         conn_guard
-            .query_row(sql, [id], |row| self.row_to_entry(row))
+            .query_row(sql, [id], Self::row_to_entry)
             .map_err(|_| KnowledgeError::NotFound(format!("entry with id {id}")))
     }
 
     /// Increment view count
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update query fails.
     pub fn record_view(&self, id: i64) -> Result<(), KnowledgeError> {
         let sql = "UPDATE knowledge_entries SET view_count = view_count + 1 WHERE id = ?";
         self.store.execute(sql, &[&id.to_string()])?;
@@ -344,6 +375,10 @@ impl KnowledgeStore {
     }
 
     /// Increment applied count
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update query fails.
     pub fn record_applied(&self, id: i64) -> Result<(), KnowledgeError> {
         let sql = "UPDATE knowledge_entries SET applied_count = applied_count + 1 WHERE id = ?";
         self.store.execute(sql, &[&id.to_string()])?;
@@ -351,12 +386,16 @@ impl KnowledgeStore {
     }
 
     /// Add feedback to an entry
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the feedback insert or score recalculation fails.
     pub fn add_feedback(&self, feedback: &KnowledgeFeedback) -> Result<i64, KnowledgeError> {
-        let sql = r#"
+        let sql = r"
             INSERT INTO knowledge_feedback (entry_id, feedback_type, session_id, comment, created_at)
             VALUES (?, ?, ?, ?, ?)
             RETURNING id
-        "#;
+        ";
 
         let conn = self.store.connection();
         let conn_guard = conn.lock().map_err(|e| {
@@ -384,7 +423,7 @@ impl KnowledgeStore {
     /// Recalculate usefulness score based on feedback
     fn recalculate_score(&self, entry_id: i64) -> Result<(), KnowledgeError> {
         // Simple scoring: helpful = +1, not_helpful = -1, outdated = -0.5
-        let sql = r#"
+        let sql = r"
             UPDATE knowledge_entries
             SET usefulness_score = (
                 SELECT COALESCE(SUM(
@@ -400,13 +439,17 @@ impl KnowledgeStore {
             ),
             updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        "#;
+        ";
         self.store
             .execute(sql, &[&entry_id.to_string(), &entry_id.to_string()])?;
         Ok(())
     }
 
     /// Search for entries by keyword
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if query execution or row deserialization fails.
     pub fn search(
         &self,
         query: &str,
@@ -440,14 +483,14 @@ impl KnowledgeStore {
             options.limit
         };
         let sql = format!(
-            r#"
+            r"
             SELECT *,
                    (usefulness_score * 0.5 + view_count * 0.1 + applied_count * 0.3) as score
             FROM knowledge_entries
             WHERE {}
             ORDER BY score DESC, created_at DESC
             LIMIT {}
-            "#,
+            ",
             conditions.join(" AND "),
             limit
         );
@@ -467,6 +510,10 @@ impl KnowledgeStore {
     }
 
     /// Get entries by tag
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if query execution or row deserialization fails.
     pub fn get_by_tags(
         &self,
         tags: &[String],
@@ -484,12 +531,12 @@ impl KnowledgeStore {
             .collect();
 
         let sql = format!(
-            r#"
+            r"
             SELECT * FROM knowledge_entries
             WHERE ({})
             ORDER BY usefulness_score DESC
             LIMIT {}
-            "#,
+            ",
             tag_conditions.join(" OR "),
             limit
         );
@@ -507,6 +554,10 @@ impl KnowledgeStore {
     }
 
     /// Get recent entries
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if query execution or row deserialization fails.
     pub fn recent(&self, limit: usize) -> Result<Vec<KnowledgeEntry>, KnowledgeError> {
         let sql = format!("SELECT * FROM knowledge_entries ORDER BY created_at DESC LIMIT {limit}");
         let results = self.store.query_json(&sql)?;
@@ -522,6 +573,10 @@ impl KnowledgeStore {
     }
 
     /// Get top-rated entries
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if query execution or row deserialization fails.
     pub fn top_rated(&self, limit: usize) -> Result<Vec<KnowledgeEntry>, KnowledgeError> {
         let sql = format!(
             "SELECT * FROM knowledge_entries WHERE usefulness_score > 0 ORDER BY usefulness_score DESC LIMIT {limit}"
@@ -539,6 +594,10 @@ impl KnowledgeStore {
     }
 
     /// Delete an entry
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deleting feedback or the entry fails.
     pub fn delete(&self, id: i64) -> Result<(), KnowledgeError> {
         self.store.execute(
             "DELETE FROM knowledge_feedback WHERE entry_id = ?",
@@ -551,8 +610,8 @@ impl KnowledgeStore {
         Ok(())
     }
 
-    /// Helper to convert a row to KnowledgeEntry
-    fn row_to_entry(&self, row: &duckdb::Row<'_>) -> Result<KnowledgeEntry, duckdb::Error> {
+    /// Helper to convert a row to `KnowledgeEntry`.
+    fn row_to_entry(row: &duckdb::Row<'_>) -> Result<KnowledgeEntry, duckdb::Error> {
         let entry_type_str: String = row.get("entry_type")?;
         let entry_type = entry_type_str
             .parse::<EntryType>()
@@ -565,8 +624,7 @@ impl KnowledgeStore {
 
         let created_str: String = row.get("created_at")?;
         let created_at = DateTime::parse_from_rfc3339(&created_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+            .map_or_else(|_| Utc::now(), |dt| dt.with_timezone(&Utc));
 
         let updated_str: Option<String> = row.get("updated_at")?;
         let updated_at = updated_str.and_then(|s| {
@@ -635,26 +693,40 @@ pub struct KnowledgeBase {
 
 impl KnowledgeBase {
     /// Create a new knowledge base
+    #[must_use]
     pub fn new() -> Self {
         Self { store: None }
     }
 
     /// Create with store
+    #[must_use]
     pub fn with_store(store: Arc<VcStore>) -> Self {
         Self { store: Some(store) }
     }
 
     /// Search for relevant solutions
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a persistent backend is configured and query execution fails.
     pub fn search_solutions(&self, _query: &str) -> Result<Vec<Solution>, KnowledgeError> {
         Ok(vec![])
     }
 
     /// Search for relevant gotchas
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a persistent backend is configured and query execution fails.
     pub fn search_gotchas(&self, _query: &str) -> Result<Vec<Gotcha>, KnowledgeError> {
         Ok(vec![])
     }
 
     /// Record a new solution from session analysis
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a persistent backend is configured and write fails.
     pub fn record_solution(&self, _solution: Solution) -> Result<(), KnowledgeError> {
         Ok(())
     }

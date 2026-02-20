@@ -1,10 +1,10 @@
 //! DCG (Dangerous Command Guard) collector - security command auditing
 //!
-//! This collector uses the SQLite Incremental ingestion pattern to collect
-//! blocked/allowed dangerous command events from the dcg SQLite database.
+//! This collector uses the `SQLite` Incremental ingestion pattern to collect
+//! blocked/allowed dangerous command events from the `dcg` `SQLite` database.
 //!
 //! ## Integration Method
-//! Direct SQLite queries on `~/.dcg/events.db`
+//! Direct `SQLite` queries on `~/.dcg/events.db`
 //!
 //! ## Tables Populated
 //! - `dcg_events`: Command execution events with decisions
@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
 
-/// Default path to the dcg SQLite database
+/// Default path to the `dcg` `SQLite` database
 pub const DEFAULT_DB_PATH: &str = "~/.dcg/events.db";
 
 /// DCG collector for dangerous command guard events
@@ -22,12 +22,13 @@ pub const DEFAULT_DB_PATH: &str = "~/.dcg/events.db";
 /// Collects command execution audit events from the dcg
 /// database using incremental primary key pattern.
 pub struct DcgCollector {
-    /// Path to the SQLite database (with ~ expansion)
+    /// Path to the `SQLite` database (with ~ expansion)
     db_path: String,
 }
 
 impl DcgCollector {
     /// Create a new collector with the default database path
+    #[must_use]
     pub fn new() -> Self {
         Self {
             db_path: DEFAULT_DB_PATH.to_string(),
@@ -43,10 +44,10 @@ impl DcgCollector {
 
     /// Expand ~ to home directory in the path
     fn expand_path(&self) -> String {
-        if self.db_path.starts_with("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                return self.db_path.replacen("~", &home, 1);
-            }
+        if self.db_path.starts_with("~/")
+            && let Ok(home) = std::env::var("HOME")
+        {
+            return self.db_path.replacen('~', &home, 1);
         }
         self.db_path.clone()
     }
@@ -89,10 +90,7 @@ impl Collector for DcgCollector {
         // Check if the database file exists
         if !ctx.executor.file_exists(&db_path, ctx.timeout).await? {
             // Database doesn't exist yet - this is not an error, just no data
-            warnings.push(Warning::info(format!(
-                "DCG database not found: {}",
-                db_path
-            )));
+            warnings.push(Warning::info(format!("DCG database not found: {db_path}")));
             return Ok(CollectResult::empty()
                 .with_warning(Warning::info("Database file not found"))
                 .with_duration(start.elapsed()));
@@ -105,7 +103,7 @@ impl Collector for DcgCollector {
         // Collect events incrementally
         // DCG stores events with: id, ts, type, cmd, cwd, rule, severity, decision, reason, user
         let events_query = format!(
-            r#"
+            r"
             SELECT
                 id,
                 ts,
@@ -121,7 +119,7 @@ impl Collector for DcgCollector {
             WHERE id > {}
             ORDER BY id
             LIMIT {}
-            "#,
+            ",
             last_id, ctx.max_rows
         );
 

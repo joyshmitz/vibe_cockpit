@@ -90,7 +90,7 @@ pub struct QueryTemplate {
     pub name: String,
     /// Description for help output
     pub description: String,
-    /// SQL template with placeholders like {param_name}
+    /// SQL template with placeholders like `{param_name}`
     pub sql: String,
     /// Required parameters with descriptions
     pub params: Vec<TemplateParam>,
@@ -137,6 +137,7 @@ pub struct QueryValidator {
 
 impl QueryValidator {
     /// Create a new validator with configuration
+    #[must_use]
     pub fn new(config: GuardrailConfig) -> Self {
         let mut validator = Self {
             config,
@@ -147,6 +148,7 @@ impl QueryValidator {
     }
 
     /// Register default safe templates
+    #[allow(clippy::too_many_lines)]
     fn register_default_templates(&mut self) {
         // Machine status template
         self.register_template(QueryTemplate {
@@ -289,11 +291,16 @@ impl QueryValidator {
     }
 
     /// Get all available templates
+    #[must_use]
     pub fn templates(&self) -> &HashMap<String, QueryTemplate> {
         &self.templates
     }
 
     /// Validate a raw SQL query
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidationError`] when raw SQL is disallowed or the query is not read-only.
     pub fn validate_raw(&self, sql: &str) -> Result<(), ValidationError> {
         if !self.config.allow_raw_sql {
             return Err(ValidationError::ForbiddenStatement {
@@ -305,10 +312,15 @@ impl QueryValidator {
     }
 
     /// Check that a query is read-only (SELECT only)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidationError`] when a forbidden statement is detected or the query is not
+    /// `SELECT`/`WITH`.
     pub fn validate_readonly(&self, sql: &str) -> Result<(), ValidationError> {
         let normalized = sql.trim().to_uppercase();
         // Pad with spaces to simplify boundary checks (catches keywords at start/end)
-        let padded = format!(" {} ", normalized);
+        let padded = format!(" {normalized} ");
 
         // Check for forbidden statement types
         let forbidden = [
@@ -337,13 +349,13 @@ impl QueryValidator {
         for keyword in forbidden {
             // Check for forbidden keyword surrounded by word boundaries (spaces)
             // The padded string ensures keywords at start/end are also caught
-            if padded.contains(&format!(" {} ", keyword)) {
+            if padded.contains(&format!(" {keyword} ")) {
                 // Allow SELECT after WITH (for CTEs like "WITH x AS (SELECT ...)")
                 if keyword == "SELECT" {
                     continue;
                 }
                 // Avoid false positives for " AS CREATE" type patterns in column aliases
-                if padded.contains(&format!(" AS {} ", keyword)) {
+                if padded.contains(&format!(" AS {keyword} ")) {
                     continue;
                 }
                 return Err(ValidationError::ForbiddenStatement {
@@ -351,8 +363,7 @@ impl QueryValidator {
                 });
             }
             // Also check for keyword after semicolon (multi-statement attempts)
-            if padded.contains(&format!("; {} ", keyword))
-                || padded.contains(&format!(";{} ", keyword))
+            if padded.contains(&format!("; {keyword} ")) || padded.contains(&format!(";{keyword} "))
             {
                 return Err(ValidationError::ForbiddenStatement {
                     statement_type: keyword.to_string(),
@@ -371,6 +382,11 @@ impl QueryValidator {
     }
 
     /// Expand a template with parameters
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidationError`] when the template is missing, a required parameter is missing,
+    /// or a parameter fails validation.
     pub fn expand_template(
         &self,
         template_name: &str,
@@ -396,7 +412,7 @@ impl QueryValidator {
 
             // Validate parameter value
             let validated_value =
-                self.validate_param_value(value, &param_def.param_type, &param_def.name)?;
+                Self::validate_param_value(value, &param_def.param_type, &param_def.name)?;
             sql = sql.replace(&placeholder, &validated_value);
         }
 
@@ -405,7 +421,6 @@ impl QueryValidator {
 
     /// Validate and sanitize a parameter value
     fn validate_param_value(
-        &self,
         value: &str,
         param_type: &ParamType,
         param_name: &str,
@@ -417,7 +432,7 @@ impl QueryValidator {
                     Ok("NULL".to_string())
                 } else {
                     let escaped = value.replace('\'', "''");
-                    Ok(format!("'{}'", escaped))
+                    Ok(format!("'{escaped}'"))
                 }
             }
             ParamType::Integer => {
@@ -474,13 +489,14 @@ impl QueryValidator {
                             reason: "Expected RFC3339 timestamp".to_string(),
                         }
                     })?;
-                    Ok(format!("'{}'", value))
+                    Ok(format!("'{value}'"))
                 }
             }
         }
     }
 
     /// Get the guardrail configuration
+    #[must_use]
     pub fn config(&self) -> &GuardrailConfig {
         &self.config
     }

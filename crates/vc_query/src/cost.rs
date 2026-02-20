@@ -45,6 +45,7 @@ pub struct ConfidenceFactors {
 
 impl ConfidenceFactors {
     /// Calculate overall confidence score as weighted average
+    #[must_use]
     pub fn overall(&self) -> f64 {
         // Weights: session_mapping is most important
         let weights = [0.5, 0.3, 0.2];
@@ -70,6 +71,8 @@ pub struct ProviderPricing {
 
 impl ProviderPricing {
     /// Calculate cost for given token counts
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn calculate_cost(&self, input_tokens: i64, output_tokens: i64) -> f64 {
         let input_cost = (input_tokens as f64 / 1000.0) * self.price_per_1k_input_tokens;
         let output_cost = (output_tokens as f64 / 1000.0) * self.price_per_1k_output_tokens;
@@ -176,11 +179,16 @@ pub struct CostQueryBuilder<'a> {
 }
 
 impl<'a> CostQueryBuilder<'a> {
+    #[must_use]
     pub fn new(store: &'a VcStore) -> Self {
         Self { store }
     }
 
     /// Get pricing for a specific provider/model
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if querying the pricing table fails.
     pub fn get_pricing(
         &self,
         provider: &str,
@@ -212,6 +220,10 @@ impl<'a> CostQueryBuilder<'a> {
     }
 
     /// Get all available pricing models
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if querying pricing rows fails.
     pub fn list_pricing(&self) -> Result<Vec<ProviderPricing>, QueryError> {
         let sql = "SELECT DISTINCT ON (provider, model) provider, model, \
                    price_per_1k_input_tokens, price_per_1k_output_tokens \
@@ -234,6 +246,10 @@ impl<'a> CostQueryBuilder<'a> {
     }
 
     /// Get cost summary for a time period
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if any underlying summary/breakdown query fails.
     pub fn cost_summary(
         &self,
         since: DateTime<Utc>,
@@ -272,7 +288,7 @@ impl<'a> CostQueryBuilder<'a> {
 
         // Calculate top cost drivers
         let top_cost_drivers =
-            self.calculate_top_drivers(&by_provider, &by_repo, &by_machine, total_cost);
+            Self::calculate_top_drivers(&by_provider, &by_repo, &by_machine, total_cost);
 
         Ok(CostSummary {
             period_start: since,
@@ -402,7 +418,6 @@ impl<'a> CostQueryBuilder<'a> {
 
     /// Calculate top cost drivers from breakdown data
     fn calculate_top_drivers(
-        &self,
         by_provider: &[ProviderCost],
         by_repo: &[RepoCost],
         by_machine: &[MachineCost],
@@ -411,52 +426,52 @@ impl<'a> CostQueryBuilder<'a> {
         let mut drivers = Vec::new();
 
         // Top provider
-        if let Some(top) = by_provider.first() {
-            if top.cost_usd > 0.0 {
-                drivers.push(CostDriver {
-                    driver_type: "provider".to_string(),
-                    driver_id: top.provider.clone(),
-                    cost_usd: top.cost_usd,
-                    percentage_of_total: top.percentage,
-                    trend: CostTrend::Unknown, // Would need historical data
-                });
-            }
+        if let Some(top) = by_provider.first()
+            && top.cost_usd > 0.0
+        {
+            drivers.push(CostDriver {
+                driver_type: "provider".to_string(),
+                driver_id: top.provider.clone(),
+                cost_usd: top.cost_usd,
+                percentage_of_total: top.percentage,
+                trend: CostTrend::Unknown, // Would need historical data
+            });
         }
 
         // Top repo
-        if let Some(top) = by_repo.first() {
-            if top.cost_usd > 0.0 {
-                let percentage = if total_cost > 0.0 {
-                    (top.cost_usd / total_cost) * 100.0
-                } else {
-                    0.0
-                };
-                drivers.push(CostDriver {
-                    driver_type: "repo".to_string(),
-                    driver_id: top.repo_id.clone(),
-                    cost_usd: top.cost_usd,
-                    percentage_of_total: percentage,
-                    trend: CostTrend::Unknown,
-                });
-            }
+        if let Some(top) = by_repo.first()
+            && top.cost_usd > 0.0
+        {
+            let percentage = if total_cost > 0.0 {
+                (top.cost_usd / total_cost) * 100.0
+            } else {
+                0.0
+            };
+            drivers.push(CostDriver {
+                driver_type: "repo".to_string(),
+                driver_id: top.repo_id.clone(),
+                cost_usd: top.cost_usd,
+                percentage_of_total: percentage,
+                trend: CostTrend::Unknown,
+            });
         }
 
         // Top machine
-        if let Some(top) = by_machine.first() {
-            if top.cost_usd > 0.0 {
-                let percentage = if total_cost > 0.0 {
-                    (top.cost_usd / total_cost) * 100.0
-                } else {
-                    0.0
-                };
-                drivers.push(CostDriver {
-                    driver_type: "machine".to_string(),
-                    driver_id: top.machine_id.clone(),
-                    cost_usd: top.cost_usd,
-                    percentage_of_total: percentage,
-                    trend: CostTrend::Unknown,
-                });
-            }
+        if let Some(top) = by_machine.first()
+            && top.cost_usd > 0.0
+        {
+            let percentage = if total_cost > 0.0 {
+                (top.cost_usd / total_cost) * 100.0
+            } else {
+                0.0
+            };
+            drivers.push(CostDriver {
+                driver_type: "machine".to_string(),
+                driver_id: top.machine_id.clone(),
+                cost_usd: top.cost_usd,
+                percentage_of_total: percentage,
+                trend: CostTrend::Unknown,
+            });
         }
 
         // Sort by cost descending
@@ -471,6 +486,10 @@ impl<'a> CostQueryBuilder<'a> {
     }
 
     /// Detect cost anomalies
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if anomaly baseline query execution fails.
     pub fn detect_anomalies(&self, threshold_percent: f64) -> Result<Vec<CostAnomaly>, QueryError> {
         // Compare recent costs to historical baseline
         let sql = "SELECT \
@@ -521,8 +540,7 @@ impl<'a> CostQueryBuilder<'a> {
                         actual_cost_usd: recent,
                         deviation_percent: deviation,
                         details: format!(
-                            "Cost changed by {:.1}% from baseline ${:.2} to ${:.2}",
-                            deviation, baseline, recent
+                            "Cost changed by {deviation:.1}% from baseline ${baseline:.2} to ${recent:.2}"
                         ),
                     });
                 }
@@ -541,6 +559,10 @@ impl<'a> CostQueryBuilder<'a> {
     }
 
     /// Insert a cost attribution record
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] if insertion into snapshot storage fails.
     pub fn insert_attribution(&self, attribution: &CostAttribution) -> Result<(), QueryError> {
         let confidence_json = serde_json::to_string(&attribution.confidence_factors)
             .unwrap_or_else(|_| "{}".to_string());
@@ -552,26 +574,22 @@ impl<'a> CostQueryBuilder<'a> {
               estimated_cost_usd, tokens_input, tokens_output, tokens_total, \
               sessions_count, requests_count, confidence, confidence_factors_json, raw_json) \
              VALUES ({}, {}, {}, {}, '{}', {}, {}, {}, {}, {}, {}, {}, '{}', '{}')",
-            attribution
-                .repo_id
-                .as_ref()
-                .map(|s| format!("'{}'", s.replace('\'', "''")))
-                .unwrap_or_else(|| "NULL".to_string()),
-            attribution
-                .repo_path
-                .as_ref()
-                .map(|s| format!("'{}'", s.replace('\'', "''")))
-                .unwrap_or_else(|| "NULL".to_string()),
-            attribution
-                .machine_id
-                .as_ref()
-                .map(|s| format!("'{}'", s.replace('\'', "''")))
-                .unwrap_or_else(|| "NULL".to_string()),
-            attribution
-                .agent_type
-                .as_ref()
-                .map(|s| format!("'{}'", s.replace('\'', "''")))
-                .unwrap_or_else(|| "NULL".to_string()),
+            attribution.repo_id.as_ref().map_or_else(
+                || "NULL".to_string(),
+                |s| format!("'{}'", s.replace('\'', "''"))
+            ),
+            attribution.repo_path.as_ref().map_or_else(
+                || "NULL".to_string(),
+                |s| format!("'{}'", s.replace('\'', "''"))
+            ),
+            attribution.machine_id.as_ref().map_or_else(
+                || "NULL".to_string(),
+                |s| format!("'{}'", s.replace('\'', "''"))
+            ),
+            attribution.agent_type.as_ref().map_or_else(
+                || "NULL".to_string(),
+                |s| format!("'{}'", s.replace('\'', "''"))
+            ),
             attribution.provider.replace('\'', "''"),
             attribution.estimated_cost_usd,
             attribution.tokens_input,
@@ -590,6 +608,8 @@ impl<'a> CostQueryBuilder<'a> {
 }
 
 /// Estimate cost from token usage using default pricing
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
 pub fn estimate_cost(provider: &str, model: &str, input_tokens: i64, output_tokens: i64) -> f64 {
     // Default pricing fallback (if not in database)
     let (input_price, output_price) = match (provider, model) {
@@ -734,7 +754,7 @@ mod tests {
             .unwrap();
 
         // Empty store should return zero values
-        assert_eq!(summary.total_cost_usd, 0.0);
+        assert!((summary.total_cost_usd - 0.0).abs() < f64::EPSILON);
         assert_eq!(summary.total_tokens, 0);
         assert!(summary.by_provider.is_empty());
     }

@@ -36,7 +36,7 @@ pub struct AccountUsage {
     #[serde(default)]
     pub account: String,
 
-    /// Usage window type (5_hour, daily, monthly)
+    /// Usage window type (`5_hour`, daily, monthly)
     #[serde(default)]
     pub window: String,
 
@@ -119,7 +119,7 @@ impl Collector for CautCollector {
             Ok(d) => d,
             Err(e) => {
                 // Try to continue with empty data if parse fails
-                warnings.push(Warning::warn(format!("Failed to parse caut output: {}", e)));
+                warnings.push(Warning::warn(format!("Failed to parse caut output: {e}")));
                 CautUsageOutput { accounts: vec![] }
             }
         };
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_default_impl() {
-        let collector = CautCollector::default();
+        let collector = CautCollector;
         assert_eq!(collector.name(), "caut");
     }
 
@@ -229,15 +229,15 @@ mod tests {
         let claude = &data.accounts[0];
         assert_eq!(claude.provider, "claude");
         assert_eq!(claude.account, "jeff@email.com");
-        assert_eq!(claude.used_percent, 45.0);
+        assert!((claude.used_percent - 45.0).abs() < f64::EPSILON);
         assert_eq!(claude.status, "healthy");
 
         let openai = &data.accounts[1];
         assert_eq!(openai.provider, "openai");
-        assert_eq!(openai.used_percent, 78.0);
+        assert!((openai.used_percent - 78.0).abs() < f64::EPSILON);
         assert_eq!(openai.credits_remaining, Some(85.50));
-        assert_eq!(openai.tokens_used, Some(125000));
-        assert_eq!(openai.tokens_limit, Some(500000));
+        assert_eq!(openai.tokens_used, Some(125_000));
+        assert_eq!(openai.tokens_limit, Some(500_000));
     }
 
     #[test]
@@ -263,14 +263,14 @@ mod tests {
 
         let account = &data.accounts[0];
         assert_eq!(account.provider, "claude");
-        assert_eq!(account.used_percent, 0.0); // Default
+        assert!(account.used_percent.abs() < f64::EPSILON); // Default
         assert!(account.tokens_used.is_none());
         assert!(account.resets_at.is_none());
     }
 
     #[test]
     fn test_parse_no_accounts_key() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let data: CautUsageOutput = serde_json::from_str(json).unwrap();
         assert!(data.accounts.is_empty());
     }

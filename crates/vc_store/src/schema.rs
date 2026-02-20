@@ -72,6 +72,7 @@ pub enum CollectorStatus {
 }
 
 impl CollectorStatus {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             CollectorStatus::Ok => "ok",
