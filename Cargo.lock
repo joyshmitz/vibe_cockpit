@@ -6016,6 +6016,7 @@ dependencies = [
  "vc_collect",
  "vc_config",
  "vc_guardian",
+ "vc_knowledge",
  "vc_oracle",
  "vc_query",
  "vc_store",
