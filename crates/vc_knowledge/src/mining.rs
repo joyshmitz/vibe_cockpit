@@ -342,7 +342,7 @@ impl SolutionMiner {
             pair.problem.clone()
         } else {
             let truncated: String = pair.problem.chars().take(max_len - 2).collect();
-            format!("{}..", truncated)
+            format!("{truncated}..")
         }
     }
 

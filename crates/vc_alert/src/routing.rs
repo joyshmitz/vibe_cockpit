@@ -372,10 +372,14 @@ impl Default for RoutingEngine {
 // Helpers
 // ============================================================================
 
-/// Simple pattern matching: supports `*` wildcard at start/end
+/// Simple pattern matching: supports `*` wildcard at start/end or both
 fn simple_match(pattern: &str, value: &str) -> bool {
     if pattern == "*" {
         return true;
+    }
+    if pattern.starts_with('*') && pattern.ends_with('*') && pattern.len() >= 2 {
+        let middle = &pattern[1..pattern.len() - 1];
+        return value.contains(middle);
     }
     if let Some(suffix) = pattern.strip_prefix('*') {
         return value.ends_with(suffix);
@@ -913,5 +917,13 @@ mod tests {
         assert!(simple_match("ork*", "orko"));
         assert!(simple_match("ork*", "orkney"));
         assert!(!simple_match("ork*", "other"));
+    }
+
+    #[test]
+    fn test_simple_match_wildcard_both() {
+        assert!(simple_match("*rk*", "orko"));
+        assert!(simple_match("*rk*", "borko"));
+        assert!(simple_match("*rk*", "rk"));
+        assert!(!simple_match("*rk*", "other"));
     }
 }

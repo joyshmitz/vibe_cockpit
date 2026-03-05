@@ -364,7 +364,7 @@ impl Executor {
     async fn run_local(&self, cmd: &str, timeout: Duration) -> Result<CommandOutput, CollectError> {
         debug!(cmd = %cmd, "Running local command");
 
-        let mut child = Command::new("sh")
+        let child = Command::new("sh")
             .arg("-c")
             .arg(cmd)
             .stdout(Stdio::piped())

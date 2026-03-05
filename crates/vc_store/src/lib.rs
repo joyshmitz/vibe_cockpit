@@ -446,6 +446,10 @@ impl VcStore {
     /// # Errors
     ///
     /// Returns [`StoreError`] if inserting any row fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal database connection mutex is poisoned.
     pub fn insert_json_batch(
         &self,
         table: &str,
@@ -488,8 +492,7 @@ impl VcStore {
                 }
                 count += 1;
             } else {
-                let _ = conn.execute("ROLLBACK", []);
-                return Err(StoreError::QueryError("insert_json_batch requires JSON objects".to_string()));
+                continue;
             }
         }
         
@@ -1737,8 +1740,7 @@ impl VcStore {
                 }
                 count += 1;
             } else {
-                let _ = conn.execute("ROLLBACK", []);
-                return Err(StoreError::QueryError("upsert_json requires JSON objects".to_string()));
+                continue;
             }
         }
         

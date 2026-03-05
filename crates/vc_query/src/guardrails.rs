@@ -320,13 +320,17 @@ impl QueryValidator {
     /// Returns [`ValidationError`] when a forbidden statement is detected or the query is not
     /// `SELECT`/`WITH`.
     pub fn validate_readonly(&self, sql: &str) -> Result<(), ValidationError> {
-        // Replace all whitespace characters with a single space to avoid bypasses
-        let normalized: String = sql.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect();
+        // Replace whitespace and common boundary characters with spaces
+        let mut normalized = String::with_capacity(sql.len());
+        for c in sql.chars() {
+            if c.is_whitespace() || c == ';' || c == '(' || c == ')' || c == ',' || c == '=' {
+                normalized.push(' ');
+            } else {
+                normalized.push(c);
+            }
+        }
         let normalized = normalized.trim().to_uppercase();
-        // Pad with spaces to simplify boundary checks (catches keywords at start/end)
-        let padded = format!(" {normalized} ");
 
-        // Check for forbidden statement types
         let forbidden = [
             "INSERT",
             "UPDATE",
@@ -348,35 +352,31 @@ impl QueryValidator {
             "COMMIT",
             "ROLLBACK",
             "SAVEPOINT",
+            "EXECUTE",
+            "PREPARE",
+            "CALL",
+            "COPY",
+            "EXPORT",
+            "LOAD",
+            "INSTALL",
         ];
 
-        for keyword in forbidden {
-            // Check for forbidden keyword surrounded by word boundaries (spaces)
-            // The padded string ensures keywords at start/end are also caught
-            if padded.contains(&format!(" {keyword} ")) {
-                // Allow SELECT after WITH (for CTEs like "WITH x AS (SELECT ...)")
-                if keyword == "SELECT" {
-                    continue;
-                }
-                // Avoid false positives for " AS CREATE" type patterns in column aliases
-                if padded.contains(&format!(" AS {keyword} ")) {
+        let words: Vec<&str> = normalized.split_whitespace().collect();
+        for (i, &word) in words.iter().enumerate() {
+            if forbidden.contains(&word) {
+                // Allow if it's explicitly used as an alias with 'AS'
+                if i > 0 && words[i - 1] == "AS" {
                     continue;
                 }
                 return Err(ValidationError::ForbiddenStatement {
-                    statement_type: keyword.to_string(),
-                });
-            }
-            // Also check for keyword after semicolon (multi-statement attempts)
-            if padded.contains(&format!("; {keyword} ")) || padded.contains(&format!(";{keyword} "))
-            {
-                return Err(ValidationError::ForbiddenStatement {
-                    statement_type: keyword.to_string(),
+                    statement_type: word.to_string(),
                 });
             }
         }
 
         // Ensure query is a SELECT or WITH ... SELECT
-        if !normalized.starts_with("SELECT") && !normalized.starts_with("WITH") {
+        let sql_upper = sql.trim_start().to_uppercase();
+        if !sql_upper.starts_with("SELECT") && !sql_upper.starts_with("WITH") {
             return Err(ValidationError::ForbiddenStatement {
                 statement_type: "non-SELECT".to_string(),
             });

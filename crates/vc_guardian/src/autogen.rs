@@ -57,6 +57,7 @@ pub enum ResolutionOutcome {
 }
 
 impl ResolutionOutcome {
+    #[must_use] 
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Success => "success",
@@ -140,6 +141,7 @@ pub struct ActionCapture {
 }
 
 impl ActionCapture {
+    #[must_use] 
     pub fn new(store: Arc<VcStore>) -> Self {
         Self { store }
     }
@@ -191,6 +193,7 @@ pub struct PatternRecognizer {
 }
 
 impl PatternRecognizer {
+    #[must_use] 
     pub fn new(store: Arc<VcStore>) -> Self {
         Self {
             store,
@@ -198,6 +201,7 @@ impl PatternRecognizer {
         }
     }
 
+    #[must_use] 
     pub fn with_min_samples(mut self, min: usize) -> Self {
         self.min_samples = min;
         self
@@ -218,11 +222,10 @@ impl PatternRecognizer {
         let mut action_sequences: Vec<Vec<CapturedAction>> = Vec::new();
         for res in &resolutions {
             let actions_str = res["actions"].as_str().unwrap_or("[]");
-            if let Ok(actions) = serde_json::from_str::<Vec<CapturedAction>>(actions_str) {
-                if !actions.is_empty() {
+            if let Ok(actions) = serde_json::from_str::<Vec<CapturedAction>>(actions_str)
+                && !actions.is_empty() {
                     action_sequences.push(actions);
                 }
-            }
         }
 
         if action_sequences.len() < self.min_samples {
@@ -343,11 +346,9 @@ impl PatternRecognizer {
                 if let CapturedAction::Command {
                     cmd: c, args, ..
                 } = action
-                {
-                    if c == cmd {
+                    && c == cmd {
                         *arg_counts.entry(args.clone()).or_insert(0) += 1;
                     }
-                }
             }
         }
 
@@ -371,6 +372,7 @@ pub struct PlaybookGenerator {
 }
 
 impl PlaybookGenerator {
+    #[must_use] 
     pub fn new(store: Arc<VcStore>) -> Self {
         Self {
             store,
@@ -379,17 +381,20 @@ impl PlaybookGenerator {
         }
     }
 
+    #[must_use] 
     pub fn with_min_confidence(mut self, confidence: f64) -> Self {
         self.min_confidence = confidence;
         self
     }
 
+    #[must_use] 
     pub fn with_min_samples(mut self, min: usize) -> Self {
         self.min_samples = min;
         self
     }
 
     /// Generate a playbook draft from a pattern
+    #[must_use] 
     pub fn generate_from_pattern(&self, pattern: &ResolutionPattern) -> PlaybookDraft {
         let steps = self.pattern_to_playbook_steps(&pattern.common_steps);
         let draft_id = format!(
@@ -524,6 +529,7 @@ const DANGEROUS_COMMANDS: &[&str] = &[
 const DANGEROUS_ARGS: &[&str] = &["-rf", "--force", "--no-preserve-root", "format"];
 
 /// Validate a playbook draft for safety
+#[must_use] 
 pub fn validate_draft(draft: &PlaybookDraft) -> ValidationResult {
     let mut issues = Vec::new();
 
@@ -548,22 +554,14 @@ pub fn validate_draft(draft: &PlaybookDraft) -> ValidationResult {
         issues.push(ValidationIssue::EmptySteps);
     }
 
-    // Check for dangerous commands
+/// Check for dangerous commands
     for step in &draft.steps {
         if let PlaybookStep::Command { cmd, args, .. } = step {
-            if DANGEROUS_COMMANDS.contains(&cmd.as_str()) {
+            if is_dangerous_command(cmd, args) {
                 issues.push(ValidationIssue::DangerousCommand {
-                    cmd: cmd.clone(),
-                    reason: format!("Command '{cmd}' is potentially destructive"),
+                    cmd: format!("{} {}", cmd, args.join(" ")),
+                    reason: "Command contains potentially destructive operations".to_string(),
                 });
-            }
-            for arg in args {
-                if DANGEROUS_ARGS.contains(&arg.as_str()) {
-                    issues.push(ValidationIssue::DangerousCommand {
-                        cmd: format!("{cmd} {arg}"),
-                        reason: format!("Argument '{arg}' is potentially destructive"),
-                    });
-                }
             }
         }
     }
@@ -574,12 +572,43 @@ pub fn validate_draft(draft: &PlaybookDraft) -> ValidationResult {
     }
 }
 
+/// Execution wrappers that should be skipped when analyzing the actual command
+const EXEC_WRAPPERS: &[&str] = &["sudo", "su", "doas", "sh", "bash", "zsh", "nohup", "exec", "eval", "env"];
+
 /// Check if a command is considered dangerous
+#[must_use] 
 pub fn is_dangerous_command(cmd: &str, args: &[String]) -> bool {
-    if DANGEROUS_COMMANDS.contains(&cmd) {
+    let mut current_cmd = cmd;
+    let mut current_args = args;
+
+    // Peel off execution wrappers (e.g., sudo, sh -c, env)
+    while EXEC_WRAPPERS.contains(&current_cmd) {
+        if let Some(next_cmd) = current_args.first() {
+            // Handle `sh -c "rm -rf"` type invocations
+            if (current_cmd == "sh" || current_cmd == "bash" || current_cmd == "zsh") && next_cmd == "-c" {
+                if let Some(wrapped_script) = current_args.get(1) {
+                    // Extremely basic check for wrapped scripts; for robustness we just scan for the words
+                    for word in wrapped_script.split_whitespace() {
+                        if DANGEROUS_COMMANDS.contains(&word) || DANGEROUS_ARGS.contains(&word) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+
+            current_cmd = next_cmd;
+            current_args = &current_args[1..];
+        } else {
+            break;
+        }
+    }
+
+    if DANGEROUS_COMMANDS.contains(&current_cmd) {
         return true;
     }
-    args.iter().any(|a| DANGEROUS_ARGS.contains(&a.as_str()))
+    
+    current_args.iter().any(|a| DANGEROUS_ARGS.contains(&a.as_str()) || DANGEROUS_COMMANDS.contains(&a.as_str()))
 }
 
 // ============================================================================
@@ -1023,7 +1052,7 @@ mod tests {
         let result = validate_draft(&draft);
         assert!(!result.valid);
         // Should have dangerous command issues (rm and -rf)
-        assert!(result.issues.len() >= 1);
+        assert!(!result.issues.is_empty());
     }
 
     #[test]
@@ -1067,6 +1096,13 @@ mod tests {
         ));
         assert!(!is_dangerous_command("echo", &["hello".to_string()]));
         assert!(!is_dangerous_command("caam", &["switch".to_string()]));
+
+        // Wrapper testing
+        assert!(is_dangerous_command("sudo", &["rm".to_string(), "-rf".to_string(), "/".to_string()]));
+        assert!(is_dangerous_command("sudo", &["dd".to_string(), "if=/dev/zero".to_string(), "of=/dev/sda".to_string()]));
+        assert!(is_dangerous_command("sh", &["-c".to_string(), "rm -rf /".to_string()]));
+        assert!(is_dangerous_command("bash", &["-c".to_string(), "echo hello && dd if=...".to_string()]));
+        assert!(!is_dangerous_command("sudo", &["systemctl".to_string(), "restart".to_string(), "nginx".to_string()]));
     }
 
     // DraftStatus tests

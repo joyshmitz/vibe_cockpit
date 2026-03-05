@@ -299,7 +299,7 @@ impl<'a> QueryBuilder<'a> {
     /// Returns [`QueryError`] if underlying store queries fail.
     pub fn machine_health(&self, machine_id: &str) -> Result<HealthScore, QueryError> {
         let sql = format!(
-            "SELECT overall_score, worst_factor_id, details_json \
+            "SELECT overall_score, worst_factor_id, details_json, collected_at \
              FROM health_summary \
              WHERE machine_id = '{}' \
              ORDER BY collected_at DESC LIMIT 1",
@@ -318,15 +318,16 @@ impl<'a> QueryBuilder<'a> {
         let row = &rows[0];
         let overall_score = row["overall_score"].as_f64().unwrap_or(1.0);
         let worst_factor = row["worst_factor_id"].as_str().map(String::from);
+        let collected_at = row["collected_at"].as_str().unwrap_or("");
 
         // Load factors from health_factors table
         let factors_sql = format!(
             "SELECT factor_id, severity, score, weight, details_json \
              FROM health_factors \
-             WHERE machine_id = '{}' \
-             ORDER BY collected_at DESC, factor_id \
-             LIMIT 20",
-            vc_store::escape_sql_literal(machine_id)
+             WHERE machine_id = '{}' AND collected_at = '{}' \
+             ORDER BY factor_id",
+            vc_store::escape_sql_literal(machine_id),
+            vc_store::escape_sql_literal(collected_at)
         );
         let factor_rows = self.store.query_json(&factors_sql)?;
         let factors: Vec<HealthFactor> = factor_rows
@@ -371,6 +372,7 @@ impl<'a> QueryBuilder<'a> {
         factors: &[HealthFactor],
     ) -> Result<HealthScore, QueryError> {
         let overall_score = compute_overall_score(factors);
+        let now = Utc::now().to_rfc3339();
 
         let worst = factors
             .iter()
@@ -408,7 +410,7 @@ impl<'a> QueryBuilder<'a> {
 
             factor_rows.push(serde_json::json!({
                 "machine_id": machine_id,
-                "collected_at": Utc::now().to_rfc3339(),
+                "collected_at": now,
                 "factor_id": factor.factor_id,
                 "severity": factor.severity.as_str(),
                 "score": factor.score,
@@ -423,7 +425,7 @@ impl<'a> QueryBuilder<'a> {
         let details_str = serde_json::to_string(&details)?;
         let summary_row = serde_json::json!({
             "machine_id": machine_id,
-            "collected_at": Utc::now().to_rfc3339(),
+            "collected_at": now,
             "overall_score": overall_score,
             "worst_factor_id": worst,
             "factor_count": factors.len(),

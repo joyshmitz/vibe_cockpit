@@ -233,6 +233,12 @@ pub fn authorize(result: &AuthResult, required: Role) -> bool {
 // Middleware helpers (for axum integration)
 // ============================================================================
 
+use axum::{
+    extract::{ConnectInfo, Request, State},
+    middleware::Next,
+};
+use std::net::SocketAddr;
+
 /// Auth state to pass through layers
 #[derive(Clone)]
 pub struct AuthState {
@@ -259,6 +265,29 @@ pub fn forbidden_response(reason: &str) -> Response {
         "status": 403
     });
     (StatusCode::FORBIDDEN, Json(body)).into_response()
+}
+
+/// Axum middleware to enforce authentication
+pub async fn auth_middleware(
+    State(state): State<AuthState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let result = authenticate(&state.config, request.headers(), &client_ip);
+
+    if !result.authenticated {
+        return unauthorized_response(&result.reason);
+    }
+
+    // Insert AuthResult into request extensions for subsequent use
+    request.extensions_mut().insert(result);
+    next.run(request).await
 }
 
 // ============================================================================

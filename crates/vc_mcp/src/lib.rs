@@ -416,7 +416,7 @@ impl McpServer {
         let total = machines.len();
         let online = machines
             .iter()
-            .filter(|m| m.get("enabled").and_then(|s| s.as_bool()) == Some(true))
+            .filter(|m| m.get("enabled").and_then(serde_json::Value::as_bool) == Some(true))
             .count();
 
         Ok(serde_json::json!({

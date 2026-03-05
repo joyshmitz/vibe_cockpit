@@ -19,6 +19,7 @@ pub enum AutopilotMode {
 }
 
 impl AutopilotMode {
+    #[must_use] 
     pub fn as_str(&self) -> &'static str {
         match self {
             AutopilotMode::Off => "off",
@@ -27,10 +28,12 @@ impl AutopilotMode {
         }
     }
 
+    #[must_use] 
     pub fn is_active(&self) -> bool {
         !matches!(self, AutopilotMode::Off)
     }
 
+    #[must_use] 
     pub fn can_execute(&self) -> bool {
         matches!(self, AutopilotMode::Execute)
     }
@@ -70,6 +73,7 @@ pub enum DecisionType {
 }
 
 impl DecisionType {
+    #[must_use] 
     pub fn as_str(&self) -> &'static str {
         match self {
             DecisionType::AccountSwitch => "account_switch",
@@ -167,7 +171,8 @@ pub struct AutopilotStatus {
 
 /// Evaluate whether an account switch is needed based on forecast data.
 ///
-/// Returns a SwitchRecommendation if switching is advisable.
+/// Returns a `SwitchRecommendation` if switching is advisable.
+#[must_use] 
 pub fn evaluate_account_switch(
     current_usage_pct: f64,
     velocity_pct_per_min: f64,
@@ -189,7 +194,7 @@ pub fn evaluate_account_switch(
     };
 
     let should_switch = current_usage_pct >= switch_threshold * 100.0
-        || (velocity_pct_per_min > 0.0 && minutes_to_threshold <= preemptive_mins as f64);
+        || (velocity_pct_per_min > 0.0 && minutes_to_threshold <= f64::from(preemptive_mins));
 
     if !should_switch {
         return None;
@@ -206,7 +211,7 @@ pub fn evaluate_account_switch(
         0.95 // High confidence when already above threshold
     } else {
         // Confidence decreases with time distance
-        let urgency = 1.0 - (minutes_to_threshold / (preemptive_mins as f64 * 2.0)).min(1.0);
+        let urgency = 1.0 - (minutes_to_threshold / (f64::from(preemptive_mins) * 2.0)).min(1.0);
         (0.6 + urgency * 0.35).min(0.99)
     };
 
@@ -240,6 +245,7 @@ pub fn evaluate_account_switch(
 /// Evaluate workload balance across machines.
 ///
 /// Returns balance actions for overloaded or underutilized machines.
+#[must_use] 
 pub fn evaluate_workload_balance(
     machine_loads: &[(String, f64, usize)], // (machine_id, avg_cpu, agent_count)
     cpu_overload_threshold: f64,
@@ -268,8 +274,7 @@ pub fn evaluate_workload_balance(
                     to_machine: target_id.clone(),
                 },
                 reason: format!(
-                    "CPU at {cpu:.1}% with {agent_count} agents; migrate to {}",
-                    target_id
+                    "CPU at {cpu:.1}% with {agent_count} agents; migrate to {target_id}"
                 ),
             });
         } else {
@@ -288,7 +293,8 @@ pub fn evaluate_workload_balance(
 
 /// Evaluate cost spending against budget.
 ///
-/// Returns a CostAnalysis with recommendations.
+/// Returns a `CostAnalysis` with recommendations.
+#[must_use] 
 pub fn evaluate_costs(
     daily_cost: f64,
     daily_budget: Option<f64>,
@@ -303,8 +309,7 @@ pub fn evaluate_costs(
         if daily_cost > budget {
             recommendations.push(CostRecommendation {
                 title: format!(
-                    "Daily spend ${:.2} exceeds budget ${:.2}",
-                    daily_cost, budget
+                    "Daily spend ${daily_cost:.2} exceeds budget ${budget:.2}"
                 ),
                 potential_savings: daily_cost - budget,
                 severity: "critical".to_string(),
@@ -327,8 +332,7 @@ pub fn evaluate_costs(
         if model.contains("opus") && *cost > 20.0 {
             recommendations.push(CostRecommendation {
                 title: format!(
-                    "High Opus usage: ${:.2}/day - consider Sonnet for routine tasks",
-                    cost
+                    "High Opus usage: ${cost:.2}/day - consider Sonnet for routine tasks"
                 ),
                 potential_savings: cost * 0.5,
                 severity: "info".to_string(),

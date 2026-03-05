@@ -189,11 +189,10 @@ impl Collector for NtmCollector {
         let output = match status_result {
             Ok(out) => out,
             Err(e) => {
-                warnings.push(Warning::error(format!(
-                    "Failed to run ntm --robot-status: {e}"
-                )));
+                let warning = Warning::error(format!("Failed to run ntm --robot-status: {e}"));
+                warnings.push(warning.clone());
                 return Ok(CollectResult::empty()
-                    .with_warning(Warning::error(format!("ntm command failed: {e}")))
+                    .with_warning(warning)
                     .with_duration(start.elapsed()));
             }
         };
@@ -202,12 +201,11 @@ impl Collector for NtmCollector {
         let status: NtmStatusOutput = match serde_json::from_str(&output) {
             Ok(s) => s,
             Err(e) => {
-                warnings.push(
-                    Warning::error(format!("Failed to parse ntm output: {e}"))
-                        .with_context(output.chars().take(500).collect::<String>()),
-                );
+                let warning = Warning::error(format!("Failed to parse ntm output: {e}"))
+                    .with_context(output.chars().take(500).collect::<String>());
+                warnings.push(warning.clone());
                 return Ok(CollectResult::empty()
-                    .with_warning(Warning::error(format!("JSON parse error: {e}")))
+                    .with_warning(warning)
                     .with_duration(start.elapsed()));
             }
         };

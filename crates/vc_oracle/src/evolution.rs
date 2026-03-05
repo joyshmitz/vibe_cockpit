@@ -92,20 +92,22 @@ impl Gene {
     /// Create a new float gene
     #[must_use]
     pub fn float(value: f64, min: f64, max: f64) -> Self {
+        let (actual_min, actual_max) = if min > max { (max, min) } else { (min, max) };
         Gene::Float {
-            value: value.clamp(min, max),
-            min,
-            max,
+            value: value.clamp(actual_min, actual_max),
+            min: actual_min,
+            max: actual_max,
         }
     }
 
     /// Create a new int gene
     #[must_use]
     pub fn int(value: i64, min: i64, max: i64) -> Self {
+        let (actual_min, actual_max) = if min > max { (max, min) } else { (min, max) };
         Gene::Int {
-            value: value.clamp(min, max),
-            min,
-            max,
+            value: value.clamp(actual_min, actual_max),
+            min: actual_min,
+            max: actual_max,
         }
     }
 

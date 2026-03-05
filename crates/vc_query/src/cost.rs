@@ -425,10 +425,8 @@ impl<'a> CostQueryBuilder<'a> {
     ) -> Vec<CostDriver> {
         let mut drivers = Vec::new();
 
-        // Top provider
-        if let Some(top) = by_provider.first()
-            && top.cost_usd > 0.0
-        {
+        // Providers
+        for top in by_provider.iter().filter(|x| x.cost_usd > 0.0) {
             drivers.push(CostDriver {
                 driver_type: "provider".to_string(),
                 driver_id: top.provider.clone(),
@@ -438,10 +436,8 @@ impl<'a> CostQueryBuilder<'a> {
             });
         }
 
-        // Top repo
-        if let Some(top) = by_repo.first()
-            && top.cost_usd > 0.0
-        {
+        // Repos
+        for top in by_repo.iter().filter(|x| x.cost_usd > 0.0) {
             let percentage = if total_cost > 0.0 {
                 (top.cost_usd / total_cost) * 100.0
             } else {
@@ -456,10 +452,8 @@ impl<'a> CostQueryBuilder<'a> {
             });
         }
 
-        // Top machine
-        if let Some(top) = by_machine.first()
-            && top.cost_usd > 0.0
-        {
+        // Machines
+        for top in by_machine.iter().filter(|x| x.cost_usd > 0.0) {
             let percentage = if total_cost > 0.0 {
                 (top.cost_usd / total_cost) * 100.0
             } else {

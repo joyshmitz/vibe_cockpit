@@ -187,7 +187,7 @@ fn build_events_section(store: &VcStore, window_hours: u32) -> DigestSection {
     let events = store
         .query_json(&format!(
             "SELECT event_type, COUNT(*) as cnt FROM audit_events \
-             WHERE created_at >= current_timestamp - INTERVAL '{window_hours} hours' \
+             WHERE ts >= current_timestamp - INTERVAL '{window_hours} hours' \
              GROUP BY event_type ORDER BY cnt DESC LIMIT 5"
         ))
         .unwrap_or_default();

@@ -71,6 +71,8 @@ pub struct AppState {
     pub store: VcStore,
     /// Server start time for uptime calculation
     pub start_time: Instant,
+    /// Auth config
+    pub auth_config: Arc<auth::AuthConfig>,
 }
 
 impl AppState {
@@ -80,6 +82,17 @@ impl AppState {
         Self {
             store,
             start_time: Instant::now(),
+            auth_config: Arc::new(auth::AuthConfig::default()),
+        }
+    }
+    
+    /// Create new app state with the given store and auth config
+    #[must_use]
+    pub fn new_with_auth(store: VcStore, auth_config: Arc<auth::AuthConfig>) -> Self {
+        Self {
+            store,
+            start_time: Instant::now(),
+            auth_config,
         }
     }
 
@@ -102,7 +115,15 @@ impl WebServer {
     #[must_use]
     pub fn new(store: VcStore, config: WebConfig) -> Self {
         Self {
-            state: Arc::new(AppState::new(store)),
+            state: Arc::new(AppState::new(store)), // NOTE: Real app would need a way to pass auth_config
+            config,
+        }
+    }
+    
+    #[must_use]
+    pub fn new_with_auth(store: VcStore, config: WebConfig, auth_config: auth::AuthConfig) -> Self {
+        Self {
+            state: Arc::new(AppState::new_with_auth(store, Arc::new(auth_config))),
             config,
         }
     }
@@ -126,7 +147,7 @@ impl WebServer {
             .await
             .map_err(|err| WebError::ServerError(err.to_string()))?;
         tracing::info!(%addr, "Starting vc_web server");
-        axum::serve(listener, self.router())
+        axum::serve(listener, self.router().into_make_service_with_connect_info::<std::net::SocketAddr>())
             .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(|err| WebError::ServerError(err.to_string()))?;
@@ -233,30 +254,41 @@ fn resolve_static_dir() -> Option<String> {
 
 /// Create the router with all routes
 pub fn create_router(state: Arc<AppState>) -> Router {
-    let router = Router::new()
+    let auth_state = auth::AuthState {
+        config: state.auth_config.clone(),
+    };
+    
+    let api_router = Router::new()
         // Health and overview
-        .route("/api/health", get(health_handler))
-        .route("/api/overview", get(overview_handler))
-        .route("/api/fleet", get(fleet_handler))
+        .route("/health", get(health_handler))
+        .route("/overview", get(overview_handler))
+        .route("/fleet", get(fleet_handler))
         // Machines
-        .route("/api/machines", get(machines_handler))
-        .route("/api/machines/{id}", get(machine_by_id_handler))
-        .route("/api/machines/{id}/health", get(machine_health_handler))
+        .route("/machines", get(machines_handler))
+        .route("/machines/{id}", get(machine_by_id_handler))
+        .route("/machines/{id}/health", get(machine_health_handler))
         .route(
-            "/api/machines/{id}/collectors",
+            "/machines/{id}/collectors",
             get(machine_collectors_handler),
         )
         // Alerts
-        .route("/api/alerts", get(alerts_handler))
-        .route("/api/alerts/rules", get(alert_rules_handler))
+        .route("/alerts", get(alerts_handler))
+        .route("/alerts/rules", get(alert_rules_handler))
         // Accounts
-        .route("/api/accounts", get(accounts_handler))
+        .route("/accounts", get(accounts_handler))
         // Sessions
-        .route("/api/sessions", get(sessions_handler))
+        .route("/sessions", get(sessions_handler))
         // Guardian
-        .route("/api/guardian/playbooks", get(guardian_playbooks_handler))
-        .route("/api/guardian/runs", get(guardian_runs_handler))
-        .route("/api/guardian/pending", get(guardian_pending_handler))
+        .route("/guardian/playbooks", get(guardian_playbooks_handler))
+        .route("/guardian/runs", get(guardian_runs_handler))
+        .route("/guardian/pending", get(guardian_pending_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            auth::auth_middleware,
+        ));
+
+    let router = Router::new()
+        .nest("/api", api_router)
         // Prometheus metrics
         .route("/metrics", get(metrics_handler))
         // WebSocket
@@ -531,7 +563,7 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
         .store
         .query_json(
             "SELECT machine_id, collector, \
-             EXTRACT(EPOCH FROM (current_timestamp - collected_at)) AS freshness_secs \
+             EXTRACT(EPOCH FROM current_timestamp) - EXTRACT(EPOCH FROM CAST(collected_at AS TIMESTAMP)) AS freshness_secs \
              FROM collector_health \
              WHERE collected_at = (SELECT MAX(ch2.collected_at) FROM collector_health ch2 \
                 WHERE ch2.machine_id = collector_health.machine_id \

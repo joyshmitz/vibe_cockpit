@@ -134,7 +134,7 @@ pub struct ProfilingSession {
     pub machine_id: String,
     pub interval_secs: u32,
     pub duration_secs: u32,
-    pub remaining_secs: u32,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 // ============================================================================
@@ -224,6 +224,7 @@ impl AdaptiveScheduler {
         interval_secs: u32,
         duration_secs: u32,
     ) {
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(i64::from(duration_secs));
         self.profiling_sessions.insert(
             machine_id.to_string(),
             ProfilingSession {
@@ -231,7 +232,7 @@ impl AdaptiveScheduler {
                 machine_id: machine_id.to_string(),
                 interval_secs,
                 duration_secs,
-                remaining_secs: duration_secs,
+                expires_at,
             },
         );
     }
@@ -241,7 +242,7 @@ impl AdaptiveScheduler {
     pub fn active_profiling(&self, machine_id: &str) -> Option<&ProfilingSession> {
         self.profiling_sessions
             .get(machine_id)
-            .filter(|s| s.remaining_secs > 0)
+            .filter(|s| s.expires_at > chrono::Utc::now())
     }
 
     /// Calculate the next poll interval for a collector
@@ -253,7 +254,7 @@ impl AdaptiveScheduler {
     pub fn compute_interval(&mut self, machine_id: &str, collector: &str) -> ScheduleDecision {
         // 1. Check profiling override
         if let Some(session) = self.profiling_sessions.get(machine_id)
-            && session.remaining_secs > 0
+            && session.expires_at > chrono::Utc::now()
         {
             let decision = ScheduleDecision {
                 machine_id: machine_id.to_string(),
@@ -666,7 +667,7 @@ mod tests {
             machine_id: "orko".to_string(),
             interval_secs: 2,
             duration_secs: 120,
-            remaining_secs: 100,
+            expires_at: chrono::Utc::now() + chrono::Duration::seconds(100),
         };
 
         let json = serde_json::to_string(&session).unwrap();
