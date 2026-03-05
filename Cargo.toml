@@ -24,7 +24,8 @@ repository = "https://github.com/Dicklesworthstone/vibe_cockpit"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.49", features = ["full"] }
+asupersync = { path = "/dp/asupersync" }
+asupersync-tokio-compat = { path = "/dp/asupersync/asupersync-tokio-compat" }
 
 # Database
 duckdb = { version = "1.4", features = ["bundled"] }
@@ -115,7 +116,8 @@ path = "src/main.rs"
 [dependencies]
 vc_cli.workspace = true
 vc_config.workspace = true
-tokio.workspace = true
+asupersync.workspace = true
+asupersync-tokio-compat.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
