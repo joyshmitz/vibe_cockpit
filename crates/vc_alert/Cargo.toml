@@ -16,8 +16,6 @@ vc_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 asupersync.workspace = true
-asupersync-tokio-compat.workspace = true
-tokio.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -26,7 +24,7 @@ dashmap.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
+futures.workspace = true
 proptest.workspace = true
 mockall.workspace = true
 asupersync.workspace = true
-asupersync-tokio-compat.workspace = true

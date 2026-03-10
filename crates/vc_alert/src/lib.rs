@@ -9,6 +9,9 @@
 
 pub mod routing;
 
+use asupersync::Cx;
+use asupersync::channel::mpsc;
+use asupersync::process::Command as ProcessCommand;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -120,7 +123,7 @@ pub struct Alert {
 #[async_trait]
 pub trait AlertChannel: Send + Sync {
     fn name(&self) -> &'static str;
-    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError>;
+    async fn deliver(&self, cx: &Cx, alert: &Alert) -> Result<(), AlertError>;
 }
 
 /// Alert engine for rule evaluation
@@ -264,13 +267,13 @@ impl Default for AlertEngine {
 
 /// TUI channel - sends alerts to the terminal UI via mpsc
 pub struct TuiChannel {
-    tx: tokio::sync::mpsc::Sender<Alert>,
+    tx: mpsc::Sender<Alert>,
 }
 
 impl TuiChannel {
     /// Create a new TUI channel with the given sender
     #[must_use]
-    pub fn new(tx: tokio::sync::mpsc::Sender<Alert>) -> Self {
+    pub fn new(tx: mpsc::Sender<Alert>) -> Self {
         Self { tx }
     }
 }
@@ -281,9 +284,9 @@ impl AlertChannel for TuiChannel {
         "tui"
     }
 
-    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+    async fn deliver(&self, cx: &Cx, alert: &Alert) -> Result<(), AlertError> {
         self.tx
-            .send(alert.clone())
+            .send(cx, alert.clone())
             .await
             .map_err(|e| AlertError::DeliveryFailed(format!("TUI channel send failed: {e}")))
     }
@@ -319,7 +322,7 @@ impl AlertChannel for WebhookChannel {
         "webhook"
     }
 
-    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+    async fn deliver(&self, _cx: &Cx, alert: &Alert) -> Result<(), AlertError> {
         let response = self
             .client
             .post(&self.url)
@@ -376,7 +379,7 @@ impl AlertChannel for LogChannel {
         "log"
     }
 
-    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+    async fn deliver(&self, _cx: &Cx, alert: &Alert) -> Result<(), AlertError> {
         match self.level {
             tracing::Level::ERROR => {
                 tracing::error!(
@@ -459,7 +462,7 @@ impl AlertChannel for MemoryChannel {
         "memory"
     }
 
-    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+    async fn deliver(&self, _cx: &Cx, alert: &Alert) -> Result<(), AlertError> {
         self.alerts.lock().unwrap().push(alert.clone());
         Ok(())
     }
@@ -508,7 +511,7 @@ impl AlertChannel for SlackChannel {
         "slack"
     }
 
-    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+    async fn deliver(&self, _cx: &Cx, alert: &Alert) -> Result<(), AlertError> {
         if alert.severity < self.min_severity {
             return Ok(());
         }
@@ -598,7 +601,7 @@ impl AlertChannel for DiscordChannel {
         "discord"
     }
 
-    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+    async fn deliver(&self, _cx: &Cx, alert: &Alert) -> Result<(), AlertError> {
         if alert.severity < self.min_severity {
             return Ok(());
         }
@@ -658,7 +661,7 @@ impl AlertChannel for DesktopChannel {
         "desktop"
     }
 
-    async fn deliver(&self, alert: &Alert) -> Result<(), AlertError> {
+    async fn deliver(&self, _cx: &Cx, alert: &Alert) -> Result<(), AlertError> {
         if alert.severity < self.min_severity {
             return Ok(());
         }
@@ -674,17 +677,17 @@ impl AlertChannel for DesktopChannel {
                 title.replace('"', r#"\""#),
             );
 
-            tokio::process::Command::new("osascript")
+            ProcessCommand::new("osascript")
                 .arg("-e")
                 .arg(&script)
-                .output()
+                .output_async()
                 .await
                 .map_err(|e| AlertError::DeliveryFailed(format!("osascript failed: {e}")))?;
         }
 
         #[cfg(target_os = "linux")]
         {
-            tokio::process::Command::new("notify-send")
+            ProcessCommand::new("notify-send")
                 .arg("--urgency")
                 .arg(match alert.severity {
                     Severity::Critical => "critical",
@@ -693,7 +696,7 @@ impl AlertChannel for DesktopChannel {
                 })
                 .arg(&title)
                 .arg(body)
-                .output()
+                .output_async()
                 .await
                 .map_err(|e| AlertError::DeliveryFailed(format!("notify-send failed: {e}")))?;
         }
@@ -732,11 +735,11 @@ impl ChannelManager {
     }
 
     /// Deliver an alert to all registered channels
-    pub async fn deliver_all(&self, alert: &Alert) -> Vec<DeliveryResult> {
+    pub async fn deliver_all(&self, cx: &Cx, alert: &Alert) -> Vec<DeliveryResult> {
         let mut results = Vec::with_capacity(self.channels.len());
 
         for channel in &self.channels {
-            let result = channel.deliver(alert).await;
+            let result = channel.deliver(cx, alert).await;
             results.push(DeliveryResult {
                 channel: channel.name().to_string(),
                 success: result.is_ok(),
@@ -799,6 +802,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use mockall::mock;
+    use std::future::Future;
 
     mock! {
         Channel {}
@@ -806,8 +810,16 @@ mod tests {
         #[async_trait]
         impl AlertChannel for Channel {
             fn name(&self) -> &'static str;
-            async fn deliver(&self, alert: &Alert) -> Result<(), AlertError>;
+            async fn deliver(&self, cx: &Cx, alert: &Alert) -> Result<(), AlertError>;
         }
+    }
+
+    fn run_async<F: Future<Output = ()>>(future: F) {
+        futures::executor::block_on(future);
+    }
+
+    fn test_cx() -> Cx {
+        Cx::for_testing()
     }
 
     // ==========================================================================
@@ -1178,48 +1190,55 @@ mod tests {
     // Mock Channel Tests
     // ==========================================================================
 
-    #[tokio::test]
-    async fn test_mock_channel_deliver() {
-        let mut mock = MockChannel::new();
-        mock.expect_name().return_const("mock");
-        mock.expect_deliver().returning(|_| Ok(()));
+    #[test]
+    fn test_mock_channel_deliver() {
+        run_async(async {
+            let cx = test_cx();
+            let mut mock = MockChannel::new();
+            mock.expect_name().return_const("mock");
+            mock.expect_deliver().returning(|_, _| Ok(()));
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test-rule".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Info,
-            title: "Test alert".to_string(),
-            message: "Testing delivery".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test-rule".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Info,
+                title: "Test alert".to_string(),
+                message: "Testing delivery".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        assert_eq!(mock.name(), "mock");
-        assert!(mock.deliver(&alert).await.is_ok());
+            assert_eq!(mock.name(), "mock");
+            assert!(mock.deliver(&cx, &alert).await.is_ok());
+        });
     }
 
-    #[tokio::test]
-    async fn test_mock_channel_delivery_failure() {
-        let mut mock = MockChannel::new();
-        mock.expect_name().return_const("failing-channel");
-        mock.expect_deliver()
-            .returning(|_| Err(AlertError::DeliveryFailed("connection refused".to_string())));
+    #[test]
+    fn test_mock_channel_delivery_failure() {
+        run_async(async {
+            let cx = test_cx();
+            let mut mock = MockChannel::new();
+            mock.expect_name().return_const("failing-channel");
+            mock.expect_deliver().returning(|_, _| {
+                Err(AlertError::DeliveryFailed("connection refused".to_string()))
+            });
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test-rule".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Warning,
-            title: "Test".to_string(),
-            message: "Testing".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test-rule".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Warning,
+                title: "Test".to_string(),
+                message: "Testing".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        let result = mock.deliver(&alert).await;
-        assert!(result.is_err());
-        assert!(matches!(result, Err(AlertError::DeliveryFailed(_))));
+            let result = mock.deliver(&cx, &alert).await;
+            assert!(result.is_err());
+            assert!(matches!(result, Err(AlertError::DeliveryFailed(_))));
+        });
     }
 
     // ==========================================================================
@@ -1290,52 +1309,58 @@ mod tests {
     // Memory Channel Tests
     // ==========================================================================
 
-    #[tokio::test]
-    async fn test_memory_channel() {
-        let channel = MemoryChannel::new();
-        assert_eq!(channel.count(), 0);
+    #[test]
+    fn test_memory_channel() {
+        run_async(async {
+            let cx = test_cx();
+            let channel = MemoryChannel::new();
+            assert_eq!(channel.count(), 0);
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Info,
-            title: "Test".to_string(),
-            message: "Test message".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Info,
+                title: "Test".to_string(),
+                message: "Test message".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        channel.deliver(&alert).await.unwrap();
-        assert_eq!(channel.count(), 1);
+            channel.deliver(&cx, &alert).await.unwrap();
+            assert_eq!(channel.count(), 1);
 
-        channel.deliver(&alert).await.unwrap();
-        assert_eq!(channel.count(), 2);
+            channel.deliver(&cx, &alert).await.unwrap();
+            assert_eq!(channel.count(), 2);
 
-        let alerts = channel.alerts();
-        assert_eq!(alerts.len(), 2);
-        assert_eq!(alerts[0].rule_id, "test");
+            let alerts = channel.alerts();
+            assert_eq!(alerts.len(), 2);
+            assert_eq!(alerts[0].rule_id, "test");
+        });
     }
 
-    #[tokio::test]
-    async fn test_memory_channel_clear() {
-        let channel = MemoryChannel::new();
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Info,
-            title: "Test".to_string(),
-            message: "Test".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+    #[test]
+    fn test_memory_channel_clear() {
+        run_async(async {
+            let cx = test_cx();
+            let channel = MemoryChannel::new();
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Info,
+                title: "Test".to_string(),
+                message: "Test".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        channel.deliver(&alert).await.unwrap();
-        assert_eq!(channel.count(), 1);
+            channel.deliver(&cx, &alert).await.unwrap();
+            assert_eq!(channel.count(), 1);
 
-        channel.clear();
-        assert_eq!(channel.count(), 0);
+            channel.clear();
+            assert_eq!(channel.count(), 0);
+        });
     }
 
     #[test]
@@ -1372,52 +1397,56 @@ mod tests {
         assert_eq!(channel.name(), "log");
     }
 
-    #[tokio::test]
-    async fn test_log_channel_deliver() {
-        let channel = LogChannel::info();
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Info,
-            title: "Test".to_string(),
-            message: "Test".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+    #[test]
+    fn test_log_channel_deliver() {
+        run_async(async {
+            let cx = test_cx();
+            let channel = LogChannel::info();
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Info,
+                title: "Test".to_string(),
+                message: "Test".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        // Should not error
-        assert!(channel.deliver(&alert).await.is_ok());
+            assert!(channel.deliver(&cx, &alert).await.is_ok());
+        });
     }
 
     // ==========================================================================
     // TUI Channel Tests
     // ==========================================================================
 
-    #[tokio::test]
-    async fn test_tui_channel() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let channel = TuiChannel::new(tx);
+    #[test]
+    fn test_tui_channel() {
+        run_async(async {
+            let cx = test_cx();
+            let (tx, mut rx) = mpsc::channel(10);
+            let channel = TuiChannel::new(tx);
 
-        assert_eq!(channel.name(), "tui");
+            assert_eq!(channel.name(), "tui");
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Warning,
-            title: "Test Alert".to_string(),
-            message: "This is a test".to_string(),
-            machine_id: Some("test-machine".to_string()),
-            context: serde_json::json!({"key": "value"}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Warning,
+                title: "Test Alert".to_string(),
+                message: "This is a test".to_string(),
+                machine_id: Some("test-machine".to_string()),
+                context: serde_json::json!({"key": "value"}),
+            };
 
-        channel.deliver(&alert).await.unwrap();
+            channel.deliver(&cx, &alert).await.unwrap();
 
-        // Verify the alert was received
-        let received = rx.try_recv().unwrap();
-        assert_eq!(received.rule_id, "test");
-        assert_eq!(received.title, "Test Alert");
+            let received = rx.try_recv().unwrap();
+            assert_eq!(received.rule_id, "test");
+            assert_eq!(received.title, "Test Alert");
+        });
     }
 
     // ==========================================================================
@@ -1528,41 +1557,46 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_slack_channel_filters_below_min_severity() {
-        let channel = SlackChannel::new("https://hooks.slack.com/test", Severity::Critical);
+    #[test]
+    fn test_slack_channel_filters_below_min_severity() {
+        run_async(async {
+            let cx = test_cx();
+            let channel = SlackChannel::new("https://hooks.slack.com/test", Severity::Critical);
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Info, // Below Critical min
-            title: "Test".to_string(),
-            message: "Test".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Info,
+                title: "Test".to_string(),
+                message: "Test".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        // Should succeed (skip) for below-threshold severity
-        assert!(channel.deliver(&alert).await.is_ok());
+            assert!(channel.deliver(&cx, &alert).await.is_ok());
+        });
     }
 
-    #[tokio::test]
-    async fn test_slack_channel_filters_warning_below_critical() {
-        let channel = SlackChannel::new("https://hooks.slack.com/test", Severity::Critical);
+    #[test]
+    fn test_slack_channel_filters_warning_below_critical() {
+        run_async(async {
+            let cx = test_cx();
+            let channel = SlackChannel::new("https://hooks.slack.com/test", Severity::Critical);
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Warning,
-            title: "Test".to_string(),
-            message: "Test".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Warning,
+                title: "Test".to_string(),
+                message: "Test".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        assert!(channel.deliver(&alert).await.is_ok());
+            assert!(channel.deliver(&cx, &alert).await.is_ok());
+        });
     }
 
     // ==========================================================================
@@ -1591,23 +1625,26 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_discord_channel_filters_below_min_severity() {
-        let channel =
-            DiscordChannel::new("https://discord.com/api/webhooks/test", Severity::Warning);
+    #[test]
+    fn test_discord_channel_filters_below_min_severity() {
+        run_async(async {
+            let cx = test_cx();
+            let channel =
+                DiscordChannel::new("https://discord.com/api/webhooks/test", Severity::Warning);
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Info, // Below Warning min
-            title: "Test".to_string(),
-            message: "Test".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Info,
+                title: "Test".to_string(),
+                message: "Test".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        assert!(channel.deliver(&alert).await.is_ok());
+            assert!(channel.deliver(&cx, &alert).await.is_ok());
+        });
     }
 
     // ==========================================================================
@@ -1620,22 +1657,25 @@ mod tests {
         assert_eq!(channel.name(), "desktop");
     }
 
-    #[tokio::test]
-    async fn test_desktop_channel_filters_below_min_severity() {
-        let channel = DesktopChannel::new(Severity::Critical);
+    #[test]
+    fn test_desktop_channel_filters_below_min_severity() {
+        run_async(async {
+            let cx = test_cx();
+            let channel = DesktopChannel::new(Severity::Critical);
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Warning, // Below Critical min
-            title: "Test".to_string(),
-            message: "Test".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Warning,
+                title: "Test".to_string(),
+                message: "Test".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        assert!(channel.deliver(&alert).await.is_ok());
+            assert!(channel.deliver(&cx, &alert).await.is_ok());
+        });
     }
 
     // ==========================================================================
@@ -1706,82 +1746,84 @@ mod tests {
         assert_eq!(manager.channel_count(), 2);
     }
 
-    #[tokio::test]
-    async fn test_channel_manager_deliver_all() {
-        let mut manager = ChannelManager::new();
-        manager.add_channel(Box::new(MemoryChannel::new()));
-        manager.add_channel(Box::new(LogChannel::info()));
+    #[test]
+    fn test_channel_manager_deliver_all() {
+        run_async(async {
+            let cx = test_cx();
+            let mut manager = ChannelManager::new();
+            manager.add_channel(Box::new(MemoryChannel::new()));
+            manager.add_channel(Box::new(LogChannel::info()));
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Warning,
-            title: "Test".to_string(),
-            message: "Test message".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Warning,
+                title: "Test".to_string(),
+                message: "Test message".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        let results = manager.deliver_all(&alert).await;
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.success));
+            let results = manager.deliver_all(&cx, &alert).await;
+            assert_eq!(results.len(), 2);
+            assert!(results.iter().all(|r| r.success));
+        });
     }
 
-    #[tokio::test]
-    async fn test_channel_manager_partial_failure() {
-        let mut manager = ChannelManager::new();
+    #[test]
+    fn test_channel_manager_partial_failure() {
+        run_async(async {
+            let cx = test_cx();
+            let mut manager = ChannelManager::new();
+            manager.add_channel(Box::new(MemoryChannel::new()));
 
-        // Add a memory channel (will succeed)
-        manager.add_channel(Box::new(MemoryChannel::new()));
+            let mut mock = MockChannel::new();
+            mock.expect_name().return_const("failing");
+            mock.expect_deliver()
+                .returning(|_, _| Err(AlertError::DeliveryFailed("network error".to_string())));
+            manager.add_channel(Box::new(mock));
 
-        // Add a mock channel that fails
-        let mut mock = MockChannel::new();
-        mock.expect_name().return_const("failing");
-        mock.expect_deliver()
-            .returning(|_| Err(AlertError::DeliveryFailed("network error".to_string())));
-        manager.add_channel(Box::new(mock));
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Critical,
+                title: "Critical".to_string(),
+                message: "Critical alert".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Critical,
-            title: "Critical".to_string(),
-            message: "Critical alert".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
-
-        let results = manager.deliver_all(&alert).await;
-        assert_eq!(results.len(), 2);
-
-        // First channel succeeded
-        assert!(results[0].success);
-        assert_eq!(results[0].channel, "memory");
-
-        // Second channel failed
-        assert!(!results[1].success);
-        assert_eq!(results[1].channel, "failing");
-        assert!(results[1].error.is_some());
+            let results = manager.deliver_all(&cx, &alert).await;
+            assert_eq!(results.len(), 2);
+            assert!(results[0].success);
+            assert_eq!(results[0].channel, "memory");
+            assert!(!results[1].success);
+            assert_eq!(results[1].channel, "failing");
+            assert!(results[1].error.is_some());
+        });
     }
 
-    #[tokio::test]
-    async fn test_channel_manager_empty_deliver() {
-        let manager = ChannelManager::new();
+    #[test]
+    fn test_channel_manager_empty_deliver() {
+        run_async(async {
+            let cx = test_cx();
+            let manager = ChannelManager::new();
 
-        let alert = Alert {
-            id: None,
-            rule_id: "test".to_string(),
-            fired_at: Utc::now(),
-            severity: Severity::Info,
-            title: "Test".to_string(),
-            message: "Test".to_string(),
-            machine_id: None,
-            context: serde_json::json!({}),
-        };
+            let alert = Alert {
+                id: None,
+                rule_id: "test".to_string(),
+                fired_at: Utc::now(),
+                severity: Severity::Info,
+                title: "Test".to_string(),
+                message: "Test".to_string(),
+                machine_id: None,
+                context: serde_json::json!({}),
+            };
 
-        let results = manager.deliver_all(&alert).await;
-        assert!(results.is_empty());
+            let results = manager.deliver_all(&cx, &alert).await;
+            assert!(results.is_empty());
+        });
     }
 }
