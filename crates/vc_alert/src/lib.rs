@@ -800,9 +800,12 @@ impl Alert {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asupersync::lab::{LabConfig, assert_deterministic};
+    use asupersync::types::Budget;
     use async_trait::async_trait;
     use mockall::mock;
     use std::future::Future;
+    use std::sync::{Arc, Mutex};
 
     mock! {
         Channel {}
@@ -1447,6 +1450,79 @@ mod tests {
             assert_eq!(received.rule_id, "test");
             assert_eq!(received.title, "Test Alert");
         });
+    }
+
+    #[test]
+    fn test_tui_channel_delivery_is_deterministic_in_lab() {
+        let first_alert = Alert {
+            id: None,
+            rule_id: "first".to_string(),
+            fired_at: DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
+                .expect("fixed timestamp for deterministic lab test"),
+            severity: Severity::Warning,
+            title: "First Alert".to_string(),
+            message: "First deterministic delivery".to_string(),
+            machine_id: Some("lab-machine".to_string()),
+            context: serde_json::json!({ "seq": 1 }),
+        };
+        let second_alert = Alert {
+            id: None,
+            rule_id: "second".to_string(),
+            fired_at: DateTime::<Utc>::from_timestamp(1_700_000_001, 0)
+                .expect("fixed timestamp for deterministic lab test"),
+            severity: Severity::Critical,
+            title: "Second Alert".to_string(),
+            message: "Second deterministic delivery".to_string(),
+            machine_id: Some("lab-machine".to_string()),
+            context: serde_json::json!({ "seq": 2 }),
+        };
+
+        assert_deterministic(
+            LabConfig::new(0xA11E).worker_count(2).max_steps(10_000),
+            |runtime| {
+                let root = runtime.state.create_root_region(Budget::INFINITE);
+                let send_cx = Cx::for_testing();
+                let recv_cx = send_cx.clone();
+                let (tx, mut rx) = mpsc::channel(2);
+                let channel = TuiChannel::new(tx);
+                let received = Arc::new(Mutex::new(Vec::<String>::new()));
+
+                let received_for_rx = Arc::clone(&received);
+                let (receiver_task, _) = runtime
+                    .state
+                    .create_task(root, Budget::INFINITE, async move {
+                        let first = rx.recv(&recv_cx).await.expect("receive first alert");
+                        let second = rx.recv(&recv_cx).await.expect("receive second alert");
+                        let mut trace = received_for_rx.lock().unwrap();
+                        trace.push(first.rule_id);
+                        trace.push(second.rule_id);
+                    })
+                    .expect("create receiver task");
+
+                let alert_one = first_alert.clone();
+                let alert_two = second_alert.clone();
+                let (sender_task, _) = runtime
+                    .state
+                    .create_task(root, Budget::INFINITE, async move {
+                        channel
+                            .deliver(&send_cx, &alert_one)
+                            .await
+                            .expect("deliver first alert");
+                        channel
+                            .deliver(&send_cx, &alert_two)
+                            .await
+                            .expect("deliver second alert");
+                    })
+                    .expect("create sender task");
+
+                runtime.scheduler.lock().schedule(sender_task, 0);
+                runtime.scheduler.lock().schedule(receiver_task, 1);
+                runtime.run_until_quiescent();
+
+                let trace = received.lock().unwrap().clone();
+                assert_eq!(trace, vec!["first".to_string(), "second".to_string()]);
+            },
+        );
     }
 
     // ==========================================================================
