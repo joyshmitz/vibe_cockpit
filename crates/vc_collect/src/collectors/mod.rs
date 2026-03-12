@@ -187,7 +187,7 @@ impl Collector for FailingDummyCollector {
         1
     }
 
-    async fn collect(&self, _ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, _cx: &asupersync::Cx, _ctx: &CollectContext) -> Result<CollectResult, CollectError> {
         if self.should_fail {
             Err(CollectError::Other(self.error_message.clone()))
         } else {
