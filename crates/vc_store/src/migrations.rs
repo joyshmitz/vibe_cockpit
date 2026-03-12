@@ -1,4 +1,69 @@
 //! Database migrations for `vc_store`
+//!
+//! # DuckDB → FrankenSQLite Translation Map (bd-axj audit, 2026-03-12)
+//!
+//! Single source of truth for every DuckDB-specific construct found in
+//! migration SQL files and Rust query code. Downstream beads (bd-dfl,
+//! bd-phr, bd-h6y, bd-zut, bd-s8lm) reference this table.
+//!
+//! ## Type Translations (migrations)
+//!
+//! | DuckDB          | SQLite        | Count | Notes                                    |
+//! |-----------------|---------------|-------|------------------------------------------|
+//! | TIMESTAMP       | TEXT          |    81 | Store ISO-8601, query with datetime()    |
+//! | BOOLEAN         | INTEGER       |    29 | 0 = false, 1 = true; DEFAULT FALSE → 0   |
+//! | BIGINT          | INTEGER       |    48 | SQLite integers are already 64-bit        |
+//! | DOUBLE          | REAL          |    35 | Direct equivalent                         |
+//! | TEXT[]           | TEXT          |     3 | JSON array string, query via json_each()  |
+//! | DOUBLE[]         | TEXT          |     1 | JSON array of floats (004 dna_embedding)  |
+//! | CREATE TYPE ENUM | TEXT + CHECK  |     1 | CHECK(col IN ('v1','v2',...)) (003)        |
+//! | VARCHAR          | TEXT          |     — | Drop size limit (SQLite ignores it)       |
+//!
+//! ## Function Translations (Rust SQL strings)
+//!
+//! | DuckDB                              | SQLite                                                   | Count | Locations                               |
+//! |-------------------------------------|----------------------------------------------------------|-------|-----------------------------------------|
+//! | `to_json(_row)`                     | Rust-side `serde_json` row construction                  |    12 | vc_store/lib.rs (518..3285)             |
+//! | `current_timestamp`                 | `datetime('now')`                                        |    33 | vc_store, vc_query, migrations          |
+//! | `current_timestamp - INTERVAL 'Xu'` | `datetime('now', '-X unit')`                             |    19 | vc_store (4), vc_query/nl (11), cost (3), digest (1) |
+//! | `CAST(x AS TIMESTAMP)`              | Remove — TEXT already stores ISO-8601                    |     6 | vc_store (3), vc_query/nl (2), vc_web (1) |
+//! | `date_trunc('week', ts)`            | `strftime('%Y-%m-%d', ts, 'weekday 0', '-6 days')`      |     1 | vc_query/nl.rs:284                      |
+//! | `date_trunc('month', ts)`           | `strftime('%Y-%m-01', ts)`                               |     1 | vc_query/nl.rs:294                      |
+//! | `DISTINCT ON (cols)`                | `ROW_NUMBER() OVER (PARTITION BY cols ORDER BY …) = 1`   |     1 | vc_query/cost.rs:228                    |
+//! | `ILIKE`                             | `LIKE` (SQLite LIKE is case-insensitive for ASCII)       |     3 | vc_query/nl.rs:640, vc_knowledge:471    |
+//! | `list_contains(arr, val)`           | `EXISTS (SELECT 1 FROM json_each(arr) WHERE value=val)`  |     1 | vc_knowledge/lib.rs:530                 |
+//! | `EXTRACT(EPOCH FROM ts)`            | `CAST(strftime('%s', ts) AS INTEGER)`                    |     2 | vc_store:1084, vc_web:567               |
+//! | `COUNT(*) FILTER (WHERE cond)`      | `SUM(CASE WHEN cond THEN 1 ELSE 0 END)`                 |     1 | vc_web/lib.rs:595                       |
+//! | `now()`                             | `datetime('now')`                                        |     2 | migrations 003 only                     |
+//! | `DEFAULT current_timestamp`         | `DEFAULT (datetime('now'))`                              |   ~30 | Migration DEFAULT clauses               |
+//!
+//! ## Rust API Translations (DuckDB crate → fsqlite)
+//!
+//! | DuckDB crate                     | FrankenSQLite                             | Count | Notes                     |
+//! |----------------------------------|-------------------------------------------|-------|---------------------------|
+//! | `duckdb::params![…]`             | `fsqlite::params![…]`                     |     2 | vc_knowledge:329,407      |
+//! | `duckdb::Connection`             | `fsqlite::Connection`                     |     — | All crate entry points    |
+//! | `QueryReturnedNoRows`            | `FrankenError::QueryReturnedNoRows`       |     — | See bd-bvt for audit      |
+//! | `Box<dyn duckdb::ToSql>`         | `Box<dyn fsqlite::ToSql>` (if needed)     |     — | See bd-bvt for audit      |
+//!
+//! ## Syntax Notes
+//!
+//! - `ON CONFLICT DO UPDATE`  — supported in SQLite (same syntax)
+//! - `RETURNING` clause       — supported since SQLite 3.35
+//! - `PRAGMA threads=N`       — not found; remove if encountered
+//! - `PRAGMA memory_limit`    — use `PRAGMA cache_size=-N` (kilobytes)
+//! - json1 extension          — enabled by default in FrankenSQLite
+//!
+//! ## Migration-Specific Risks
+//!
+//! - **003_knowledge_base.sql**: Only file with `CREATE TYPE … AS ENUM` — must
+//!   convert to `TEXT + CHECK(col IN (…))` constraint.
+//! - **003_knowledge_base.sql**: Uses `now()` (DuckDB alias) instead of
+//!   `current_timestamp` — translate to `datetime('now')`.
+//! - **001_initial_schema.sql**: 3 `TEXT[]` columns (tags, recipients, channels)
+//!   — convert to `TEXT` and query via `json_each()`.
+//! - **004_agent_dna.sql**: 1 `DOUBLE[]` column (dna_embedding) — convert to
+//!   `TEXT` storing JSON float array.
 
 use crate::StoreError;
 use duckdb::Connection;
