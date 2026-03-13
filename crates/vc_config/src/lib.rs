@@ -458,6 +458,12 @@ pub struct TuiConfig {
     /// Refresh interval in milliseconds
     pub refresh_ms: u64,
 
+    /// Render the TUI inline instead of using the alternate screen
+    pub inline_mode: bool,
+
+    /// Inline UI height in terminal rows
+    pub inline_height: u16,
+
     /// Enable mouse support
     pub mouse_support: bool,
 
@@ -472,6 +478,8 @@ impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             refresh_ms: 1000,
+            inline_mode: false,
+            inline_height: 20,
             mouse_support: true,
             theme: "default".to_string(),
             show_charts: true,
@@ -1003,6 +1011,8 @@ preemptive_mins = 15
 
 [tui]
 refresh_ms = 1000
+inline_mode = false
+inline_height = 20
 mouse_support = true
 theme = "default"
 show_charts = true
@@ -1450,6 +1460,8 @@ enabled = true
         assert!(toml.contains("[tui]"));
         assert!(toml.contains("[web]"));
         assert!(toml.contains("poll_interval_secs"));
+        assert!(toml.contains("inline_mode = false"));
+        assert!(toml.contains("inline_height = 20"));
     }
 
     #[test]
@@ -1458,5 +1470,15 @@ enabled = true
         let toml = config.to_toml().expect("should serialize");
         assert!(toml.contains("[global]"));
         assert!(toml.contains("poll_interval_secs = 120"));
+        assert!(toml.contains("inline_mode = false"));
+        assert!(toml.contains("inline_height = 20"));
+    }
+
+    #[test]
+    fn test_tui_config_defaults() {
+        let config = TuiConfig::default();
+        assert!(!config.inline_mode);
+        assert_eq!(config.inline_height, 20);
+        assert!(config.mouse_support);
     }
 }
