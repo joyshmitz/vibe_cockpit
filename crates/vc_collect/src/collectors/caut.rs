@@ -99,7 +99,11 @@ impl Collector for CautCollector {
         false // Each collection is a point-in-time snapshot
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
 

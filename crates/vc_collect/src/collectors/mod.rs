@@ -85,7 +85,11 @@ impl Collector for DummyCollector {
         false
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
 
         // Generate a test row
@@ -125,7 +129,11 @@ impl Collector for IncrementalDummyCollector {
         true
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
 
         // Get the last primary key or start from 0
@@ -187,7 +195,11 @@ impl Collector for FailingDummyCollector {
         1
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, _ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        _ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         if self.should_fail {
             Err(CollectError::Other(self.error_message.clone()))
         } else {
@@ -224,7 +236,11 @@ impl Collector for ToolRequiringDummyCollector {
         Some(self.required)
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         // Check tool availability first
         if !self.check_availability(ctx).await {
             return Err(CollectError::ToolNotFound(self.required.to_string()));
@@ -266,7 +282,11 @@ impl Collector for BatchDummyCollector {
         1
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
 
         // Respect max_rows limit
@@ -368,7 +388,11 @@ impl Collector for RuCollector {
         false // Stateless - each poll is a fresh snapshot
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut rows = vec![];
         let mut warnings = vec![];
@@ -541,7 +565,11 @@ impl Collector for FallbackProbeCollector {
         false // Each collection is a point-in-time snapshot
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let mut raw_outputs = Vec::new();

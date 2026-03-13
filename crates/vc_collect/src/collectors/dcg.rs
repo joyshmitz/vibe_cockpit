@@ -77,7 +77,11 @@ impl Collector for DcgCollector {
         true
     }
 
-    async fn collect(&self, _cx: &asupersync::Cx, ctx: &CollectContext) -> Result<CollectResult, CollectError> {
+    async fn collect(
+        &self,
+        _cx: &asupersync::Cx,
+        ctx: &CollectContext,
+    ) -> Result<CollectResult, CollectError> {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let db_path = self.expand_path();
