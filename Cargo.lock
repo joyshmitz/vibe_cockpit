@@ -6864,12 +6864,15 @@ dependencies = [
  "asupersync 0.2.7",
  "asupersync-tokio-compat",
  "clap",
+ "ftui",
+ "ftui-harness",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "vc_cli",
  "vc_config",
+ "vc_tui",
  "vergen-gix",
 ]
 
