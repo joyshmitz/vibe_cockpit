@@ -20,7 +20,10 @@ use futures::future::{self, Either};
 use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use vc_collect::executor::Executor;
@@ -1214,7 +1217,9 @@ impl Cli {
 
                 let config = load_config(self.config.as_ref())?;
                 let options = resolve_tui_options(&config, inline);
-                vc_tui::run_with_options(options)?;
+                let controller = ShutdownController::new();
+                let receiver = controller.subscribe();
+                run_with_shutdown_budget(cx, "tui", controller, run_tui(options, receiver)).await?;
             }
             Commands::Daemon { foreground } => {
                 let controller = ShutdownController::new();
@@ -2893,9 +2898,15 @@ impl Cli {
 
                 match command {
                     McpCommands::Serve => {
-                        server.run_stdio().map_err(|e| {
-                            CliError::CommandFailed(format!("MCP server error: {e}"))
-                        })?;
+                        let controller = ShutdownController::new();
+                        let receiver = controller.subscribe();
+                        run_with_shutdown_budget(
+                            cx,
+                            "mcp",
+                            controller,
+                            run_mcp_server(server, receiver),
+                        )
+                        .await?;
                     }
                     McpCommands::Tools => {
                         let tools: Vec<serde_json::Value> = server
@@ -3420,15 +3431,38 @@ async fn run_with_shutdown_budget<F>(
 where
     F: std::future::Future<Output = Result<(), CliError>>,
 {
+    run_with_shutdown_signal(
+        cx,
+        command,
+        controller,
+        resolve_shutdown_grace_period(),
+        wait_for_shutdown_signal(),
+        command_future,
+    )
+    .await
+}
+
+async fn run_with_shutdown_signal<F, S>(
+    cx: &Cx,
+    command: &'static str,
+    controller: ShutdownController,
+    shutdown_grace_period: Duration,
+    signal_future: S,
+    command_future: F,
+) -> Result<(), CliError>
+where
+    F: std::future::Future<Output = Result<(), CliError>>,
+    S: std::future::Future<Output = Result<ShutdownSignal, CliError>>,
+{
     let command_future = Box::pin(command_future);
-    let signal_future = Box::pin(wait_for_shutdown_signal());
+    let signal_future = Box::pin(signal_future);
 
     match future::select(command_future, signal_future).await {
         Either::Left((result, _)) => result,
         Either::Right((signal_result, command_future)) => {
             let signal = signal_result?;
             let shutdown_budget =
-                Budget::new().with_deadline(asupersync::time::wall_now() + resolve_shutdown_grace_period());
+                Budget::new().with_deadline(asupersync::time::wall_now() + shutdown_grace_period);
 
             controller.shutdown();
             cx.cancel_with(signal.cancel_kind(), Some("process shutdown requested"));
@@ -3476,7 +3510,7 @@ where
                     );
                     Err(CliError::CommandFailed(format!(
                         "{command} did not drain within {} seconds after {}",
-                        resolve_shutdown_grace_period().as_secs(),
+                        shutdown_grace_period.as_secs(),
                         signal.as_str()
                     )))
                 }
@@ -3489,7 +3523,10 @@ async fn wait_for_interval_or_shutdown(tick: Duration, shutdown: &mut ShutdownRe
     let sleep = Box::pin(asupersync::time::sleep(asupersync::time::wall_now(), tick));
     let shutdown_wait = Box::pin(shutdown.wait());
 
-    matches!(future::select(sleep, shutdown_wait).await, Either::Right((_shutdown, _sleep)))
+    matches!(
+        future::select(sleep, shutdown_wait).await,
+        Either::Right((_shutdown, _sleep))
+    )
 }
 
 async fn run_daemon(
@@ -3531,8 +3568,41 @@ async fn run_daemon(
         tracing::debug!(ticks, "Daemon poll tick");
     }
 
-    tracing::info!(ticks, total_children = 1_u32, drained_children = 1_u32, "Daemon drained");
+    tracing::info!(
+        ticks,
+        total_children = 1_u32,
+        drained_children = 1_u32,
+        "Daemon drained"
+    );
     Ok(())
+}
+
+async fn run_tui(
+    options: vc_tui::RunOptions,
+    mut shutdown: ShutdownReceiver,
+) -> Result<(), CliError> {
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let worker_shutdown = Arc::clone(&shutdown_requested);
+    let join_handle = tokio::task::spawn_blocking(move || {
+        vc_tui::run_with_options_and_shutdown_flag(options, worker_shutdown)
+    });
+    let join_handle = Box::pin(join_handle);
+    let shutdown_wait = Box::pin(shutdown.wait());
+
+    match future::select(join_handle, shutdown_wait).await {
+        Either::Left((join_result, _)) => {
+            join_result
+                .map_err(|err| CliError::CommandFailed(format!("TUI task failed: {err}")))??;
+            Ok(())
+        }
+        Either::Right((_, join_handle)) => {
+            shutdown_requested.store(true, Ordering::Release);
+            join_handle
+                .await
+                .map_err(|err| CliError::CommandFailed(format!("TUI task failed: {err}")))??;
+            Ok(())
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3596,7 +3666,11 @@ async fn run_watch(
         }
 
         if wait_for_interval_or_shutdown(tick, &mut shutdown).await {
-            tracing::info!(ticks, buffered_events = event_buffer.len(), "Watch shutdown requested");
+            tracing::info!(
+                ticks,
+                buffered_events = event_buffer.len(),
+                "Watch shutdown requested"
+            );
             break;
         }
 
@@ -3647,7 +3721,12 @@ async fn run_watch(
         flush_watch_events(&mut event_buffer, use_toon);
     }
 
-    tracing::info!(ticks, total_children = 1_u32, drained_children = 1_u32, "Watch drained");
+    tracing::info!(
+        ticks,
+        total_children = 1_u32,
+        drained_children = 1_u32,
+        "Watch drained"
+    );
     Ok(())
 }
 
@@ -3681,6 +3760,35 @@ async fn run_web_server(
         .await
         .map_err(|err| CliError::CommandFailed(format!("Web server error: {err}")))?;
     Ok(())
+}
+
+async fn run_mcp_server(
+    server: vc_mcp::McpServer,
+    mut shutdown: ShutdownReceiver,
+) -> Result<(), CliError> {
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let worker_shutdown = Arc::clone(&shutdown_requested);
+    let join_handle =
+        tokio::task::spawn_blocking(move || server.run_stdio_with_shutdown(worker_shutdown));
+    let join_handle = Box::pin(join_handle);
+    let shutdown_wait = Box::pin(shutdown.wait());
+
+    match future::select(join_handle, shutdown_wait).await {
+        Either::Left((join_result, _)) => {
+            join_result
+                .map_err(|err| CliError::CommandFailed(format!("MCP task failed: {err}")))?
+                .map_err(|err| CliError::CommandFailed(format!("MCP server error: {err}")))?;
+            Ok(())
+        }
+        Either::Right((_, join_handle)) => {
+            shutdown_requested.store(true, Ordering::Release);
+            join_handle
+                .await
+                .map_err(|err| CliError::CommandFailed(format!("MCP task failed: {err}")))?
+                .map_err(|err| CliError::CommandFailed(format!("MCP server error: {err}")))?;
+            Ok(())
+        }
+    }
 }
 
 fn load_config(config_path: Option<&std::path::PathBuf>) -> Result<VcConfig, CliError> {
@@ -4762,8 +4870,61 @@ mod tests {
             let mut receiver = controller.subscribe();
             controller.shutdown();
 
-            let requested = wait_for_interval_or_shutdown(Duration::from_secs(60), &mut receiver).await;
+            let requested =
+                wait_for_interval_or_shutdown(Duration::from_secs(60), &mut receiver).await;
             assert!(requested);
+        });
+    }
+
+    #[test]
+    fn run_with_shutdown_signal_drains_after_shutdown_request() {
+        run_async(async {
+            let controller = ShutdownController::new();
+            let mut receiver = controller.subscribe();
+            let cx = Cx::for_request();
+
+            let result = run_with_shutdown_signal(
+                &cx,
+                "test-command",
+                controller,
+                Duration::from_millis(50),
+                future::ready(Ok(ShutdownSignal::Interrupt)),
+                async move {
+                    receiver.wait().await;
+                    Ok(())
+                },
+            )
+            .await;
+
+            assert!(result.is_ok());
+            assert!(cx.checkpoint().is_err());
+        });
+    }
+
+    #[test]
+    fn run_with_shutdown_signal_errors_when_budget_expires() {
+        run_async(async {
+            let controller = ShutdownController::new();
+            let mut receiver = controller.subscribe();
+            let cx = Cx::for_request();
+
+            let result = run_with_shutdown_signal(
+                &cx,
+                "test-command",
+                controller,
+                Duration::ZERO,
+                future::ready(Ok(ShutdownSignal::Terminate)),
+                async move {
+                    receiver.wait().await;
+                    future::pending::<Result<(), CliError>>().await
+                },
+            )
+            .await;
+
+            assert!(
+                matches!(result, Err(CliError::CommandFailed(message)) if message.contains("did not drain within"))
+            );
+            assert!(cx.checkpoint().is_err());
         });
     }
 

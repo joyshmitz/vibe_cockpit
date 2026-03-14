@@ -16,12 +16,26 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VC_BIN="${VC_BIN:-$PROJECT_ROOT/target/release/vc}"
 TIMEOUT_SECS="${TIMEOUT_SECS:-10}"
 LOG_DIR="${VC_E2E_LOG_DIR:-$PROJECT_ROOT/tests/logs}"
+TMP_DIR="$(mktemp -d)"
 
 mkdir -p "$LOG_DIR"
 
 # ── Helper ────────────────────────────────────────────────────────────────
 fail() { echo "FAIL: $1" >&2; exit 1; }
 pass() { echo "PASS: $1"; }
+
+CONFIG_PATH="$TMP_DIR/runtime_boot.toml"
+DB_PATH="$TMP_DIR/runtime_boot.duckdb"
+cat > "$CONFIG_PATH" <<EOF
+[global]
+db_path = "$DB_PATH"
+poll_interval_secs = 60
+
+[collectors]
+timeout_secs = 15
+max_concurrent_collectors = 4
+max_concurrent_per_machine = 2
+EOF
 
 # ── Pre-check: binary exists ──────────────────────────────────────────────
 if [ ! -x "$VC_BIN" ]; then
@@ -87,7 +101,8 @@ fi
 # ── Test 4: SIGTERM graceful shutdown ─────────────────────────────────────
 echo "--- Test 4: SIGTERM graceful shutdown ---"
 # Start vc daemon in background (foreground mode)
-"$VC_BIN" daemon --foreground > "$LOG_DIR/runtime_boot_daemon.out" 2>"$LOG_DIR/runtime_boot_daemon.err" &
+VC_SHUTDOWN_GRACE_SECS=1 "$VC_BIN" --config "$CONFIG_PATH" daemon --foreground \
+    > "$LOG_DIR/runtime_boot_daemon.out" 2>"$LOG_DIR/runtime_boot_daemon.err" &
 VC_PID=$!
 
 # Give it time to start
@@ -109,16 +124,20 @@ if kill -0 "$VC_PID" 2>/dev/null; then
 
     if $shutdown_ok; then
         wait "$VC_PID" 2>/dev/null || true
-        pass "SIGTERM graceful shutdown completed"
+        if grep -q "Shutdown drain completed" "$LOG_DIR/runtime_boot_daemon.err" \
+            && grep -q "Daemon drained" "$LOG_DIR/runtime_boot_daemon.err"; then
+            pass "SIGTERM graceful shutdown completed with drain logs"
+        else
+            fail "Daemon exited after SIGTERM but drain logs were missing"
+        fi
     else
         kill -9 "$VC_PID" 2>/dev/null || true
         wait "$VC_PID" 2>/dev/null || true
         fail "Process did not exit within 5s after SIGTERM"
     fi
 else
-    # Process already exited (e.g. no config)
     wait "$VC_PID" 2>/dev/null || true
-    pass "Daemon exited quickly (expected without config)"
+    fail "Daemon exited before SIGTERM test could run"
 fi
 
 echo "--- All runtime boot tests passed ---"

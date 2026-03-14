@@ -23,7 +23,12 @@
 //! JSON-RPC 2.0 over stdin/stdout (standard MCP transport)
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::time::Duration;
 use thiserror::Error;
 use tracing::debug;
 use vc_store::{VcStore, escape_sql_literal};
@@ -708,7 +713,7 @@ impl McpServer {
     /// Returns an error when reading input, parsing/serializing JSON, or
     /// writing output fails.
     pub fn run_stdio(&self) -> Result<(), McpError> {
-        use std::io::{BufRead, Write};
+        use std::io::BufRead;
 
         let stdin = std::io::stdin();
         let stdout = std::io::stdout();
@@ -717,35 +722,96 @@ impl McpServer {
 
         for line in reader.lines() {
             let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            let request: JsonRpcRequest = match serde_json::from_str(&line) {
-                Ok(req) => req,
-                Err(e) => {
-                    let error_resp = JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: None,
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32700,
-                            message: format!("Parse error: {e}"),
-                        }),
-                    };
-                    let resp_json = serde_json::to_string(&error_resp)?;
-                    writeln!(writer, "{resp_json}")?;
-                    writer.flush()?;
-                    continue;
-                }
-            };
-
-            let response = self.handle_request(&request);
-            let resp_json = serde_json::to_string(&response)?;
-            writeln!(writer, "{resp_json}")?;
-            writer.flush()?;
+            self.write_response_for_line(&line, &mut writer)?;
         }
 
+        Ok(())
+    }
+
+    /// Run the MCP server on stdio while honoring an external shutdown flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when reading input, parsing/serializing JSON, or
+    /// writing output fails.
+    pub fn run_stdio_with_shutdown(
+        &self,
+        shutdown_requested: Arc<AtomicBool>,
+    ) -> Result<(), McpError> {
+        use std::io::BufRead;
+
+        let (sender, receiver) = mpsc::channel::<Result<String, std::io::Error>>();
+        std::thread::spawn(move || {
+            let stdin = std::io::stdin();
+            let reader = stdin.lock();
+
+            for line in reader.lines() {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let stdout = std::io::stdout();
+        let mut writer = stdout.lock();
+
+        self.run_received_lines_with_shutdown(receiver, &mut writer, &shutdown_requested)
+    }
+
+    fn run_received_lines_with_shutdown<W: std::io::Write>(
+        &self,
+        receiver: mpsc::Receiver<Result<String, std::io::Error>>,
+        writer: &mut W,
+        shutdown_requested: &AtomicBool,
+    ) -> Result<(), McpError> {
+        loop {
+            if shutdown_requested.load(Ordering::Acquire) {
+                break;
+            }
+
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok(Ok(line)) => self.write_response_for_line(&line, writer)?,
+                Ok(Err(err)) => return Err(McpError::IoError(err)),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_response_for_line<W: std::io::Write>(
+        &self,
+        line: &str,
+        writer: &mut W,
+    ) -> Result<(), McpError> {
+        if line.trim().is_empty() {
+            return Ok(());
+        }
+
+        let request: JsonRpcRequest = match serde_json::from_str(line) {
+            Ok(req) => req,
+            Err(e) => {
+                let error_resp = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: None,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32700,
+                        message: format!("Parse error: {e}"),
+                    }),
+                };
+                let resp_json = serde_json::to_string(&error_resp)?;
+                writeln!(writer, "{resp_json}")?;
+                writer.flush()?;
+                return Ok(());
+            }
+        };
+
+        let response = self.handle_request(&request);
+        let resp_json = serde_json::to_string(&response)?;
+        writeln!(writer, "{resp_json}")?;
+        writer.flush()?;
         Ok(())
     }
 }
@@ -753,10 +819,48 @@ impl McpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     fn test_server() -> McpServer {
         let store = Arc::new(VcStore::open_memory().unwrap());
         McpServer::new(store)
+    }
+
+    #[test]
+    fn test_run_received_lines_with_shutdown_processes_request_before_shutdown() {
+        let server = test_server();
+        let (sender, receiver) = mpsc::channel();
+        let shutdown_requested = AtomicBool::new(false);
+        let mut writer = Cursor::new(Vec::new());
+
+        sender
+            .send(Ok(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string()
+            ))
+            .unwrap();
+        drop(sender);
+
+        server
+            .run_received_lines_with_shutdown(receiver, &mut writer, &shutdown_requested)
+            .unwrap();
+
+        let output = String::from_utf8(writer.into_inner()).unwrap();
+        assert!(output.contains("\"jsonrpc\":\"2.0\""));
+        assert!(output.contains("\"result\""));
+    }
+
+    #[test]
+    fn test_run_received_lines_with_shutdown_returns_on_shutdown_flag() {
+        let server = test_server();
+        let (_sender, receiver) = mpsc::channel();
+        let shutdown_requested = AtomicBool::new(true);
+        let mut writer = Cursor::new(Vec::new());
+
+        server
+            .run_received_lines_with_shutdown(receiver, &mut writer, &shutdown_requested)
+            .unwrap();
+
+        assert!(writer.into_inner().is_empty());
     }
 
     // ========================================================================

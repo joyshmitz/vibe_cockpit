@@ -7,6 +7,10 @@
 //! - Keyboard navigation
 
 use serde::{Deserialize, Serialize};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -257,6 +261,7 @@ pub struct App {
     pub current_screen: Screen,
     pub should_quit: bool,
     pub last_error: Option<String>,
+    shutdown_requested: Option<Arc<AtomicBool>>,
     pub theme: Theme,
     // Screen data — all screens represented
     pub overview_data: OverviewData,
@@ -281,6 +286,7 @@ impl App {
             current_screen: Screen::Overview,
             should_quit: false,
             last_error: None,
+            shutdown_requested: None,
             theme: Theme::default(),
             overview_data: OverviewData::default(),
             machines_data: MachinesData::default(),
@@ -295,6 +301,14 @@ impl App {
             rch_data: RchData::default(),
             settings_data: SettingsData::default(),
         }
+    }
+
+    /// Create a new app instance that can be asked to quit externally.
+    #[must_use]
+    pub fn with_shutdown_flag(shutdown_requested: Arc<AtomicBool>) -> Self {
+        let mut app = Self::new();
+        app.shutdown_requested = Some(shutdown_requested);
+        app
     }
 
     /// Write a string into an ftui buffer at the given row.
@@ -460,12 +474,80 @@ impl ftui::Model for App {
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn ftui::runtime::Subscription<Self::Message>>> {
-        vec![Box::new(ftui::runtime::Every::new(TICK_INTERVAL, || {
-            AppMessage::Tick
-        }))]
+        let mut subscriptions: Vec<Box<dyn ftui::runtime::Subscription<Self::Message>>> =
+            vec![Box::new(ftui::runtime::Every::new(TICK_INTERVAL, || {
+                AppMessage::Tick
+            }))];
+
+        if let Some(shutdown_requested) = &self.shutdown_requested {
+            subscriptions.push(Box::new(ShutdownSubscription {
+                shutdown_requested: Arc::clone(shutdown_requested),
+            }));
+        }
+
+        subscriptions
     }
 }
 
+struct ShutdownSubscription {
+    shutdown_requested: Arc<AtomicBool>,
+}
+
+impl ftui::runtime::Subscription<AppMessage> for ShutdownSubscription {
+    fn id(&self) -> ftui::runtime::SubId {
+        0x5643_5f53_4855_5444
+    }
+
+    fn run(&self, sender: std::sync::mpsc::Sender<AppMessage>, stop: ftui::runtime::StopSignal) {
+        while !stop.wait_timeout(Duration::from_millis(50)) {
+            if self.shutdown_requested.load(Ordering::Acquire) {
+                let _ = sender.send(AppMessage::Quit);
+                break;
+            }
+        }
+    }
+}
+
+fn run_app_with_options(app: App, options: RunOptions) -> Result<(), TuiError> {
+    let screen_mode = options.screen_mode();
+    tracing::info!(
+        inline_mode = options.inline_mode,
+        inline_height = options.inline_height,
+        mouse_support = options.mouse_support,
+        ?screen_mode,
+        "starting vc_tui"
+    );
+
+    let builder = ftui::App::new(app).screen_mode(screen_mode);
+    let builder = if options.mouse_support {
+        builder
+    } else {
+        builder.with_mouse_enabled(false)
+    };
+
+    builder.run().map_err(TuiError::from)
+}
+
+/// Run the TUI application with an external shutdown flag.
+///
+/// # Errors
+///
+/// Returns [`TuiError`] if terminal setup or the `FrankenTUI` runtime fails.
+pub fn run_with_options_and_shutdown_flag(
+    options: RunOptions,
+    shutdown_requested: Arc<AtomicBool>,
+) -> Result<(), TuiError> {
+    run_app_with_options(App::with_shutdown_flag(shutdown_requested), options)
+}
+
+/// Run the TUI application with the requested screen mode.
+///
+/// # Errors
+///
+/// Returns [`TuiError`] if terminal setup or the `FrankenTUI` runtime fails.
+pub fn run_with_options(options: RunOptions) -> Result<(), TuiError> {
+    run_app_with_options(App::default(), options)
+}
 impl App {
     /// Handle an ftui key event (Elm path).
     fn handle_ftui_key(&mut self, key: ftui::KeyEvent) -> ftui::Cmd<AppMessage> {
@@ -504,31 +586,6 @@ impl Default for App {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Run the TUI application with the requested screen mode.
-///
-/// # Errors
-///
-/// Returns [`TuiError`] if terminal setup or the `FrankenTUI` runtime fails.
-pub fn run_with_options(options: RunOptions) -> Result<(), TuiError> {
-    let screen_mode = options.screen_mode();
-    tracing::info!(
-        inline_mode = options.inline_mode,
-        inline_height = options.inline_height,
-        mouse_support = options.mouse_support,
-        ?screen_mode,
-        "starting vc_tui"
-    );
-
-    let builder = ftui::App::new(App::default()).screen_mode(screen_mode);
-    let builder = if options.mouse_support {
-        builder
-    } else {
-        builder.with_mouse_enabled(false)
-    };
-
-    builder.run().map_err(TuiError::from)
 }
 
 #[cfg(test)]
@@ -674,6 +731,17 @@ mod tests {
             (app1.overview_data.fleet_health - app2.overview_data.fleet_health).abs()
                 < f64::EPSILON
         );
+    }
+
+    #[test]
+    fn test_app_with_shutdown_flag_registers_shutdown_subscription() {
+        use ftui::Model;
+
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let app = App::with_shutdown_flag(shutdown_requested);
+        let subscriptions = app.subscriptions();
+
+        assert_eq!(subscriptions.len(), 2);
     }
 
     // ==========================================================================
