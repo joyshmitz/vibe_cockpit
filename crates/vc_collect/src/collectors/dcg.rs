@@ -12,7 +12,10 @@
 use async_trait::async_trait;
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+    Warning,
+};
 
 /// Default path to the `dcg` `SQLite` database
 pub const DEFAULT_DB_PATH: &str = "~/.dcg/events.db";
@@ -77,27 +80,27 @@ impl Collector for DcgCollector {
         true
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let db_path = self.expand_path();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if sqlite3 is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("sqlite3".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("sqlite3".to_string()));
         }
 
         // Check if the database file exists
-        if !ctx.executor.file_exists(&db_path, ctx.timeout).await? {
+        crate::collect_checkpoint!(cx, "pre_dcg_file_check");
+        if !crate::collect_try!(ctx.executor.file_exists(&db_path, ctx.timeout).await) {
             // Database doesn't exist yet - this is not an error, just no data
             warnings.push(Warning::info(format!("DCG database not found: {db_path}")));
-            return Ok(CollectResult::empty()
+            let result = CollectResult::empty()
                 .with_warning(Warning::info("Database file not found"))
-                .with_duration(start.elapsed()));
+                .with_duration(start.elapsed());
+            crate::collect_checkpoint!(cx, "collect_complete");
+            return asupersync::Outcome::Ok(result);
         }
 
         // Get the last seen event ID from cursor
@@ -130,7 +133,9 @@ impl Collector for DcgCollector {
         let events = ctx
             .executor
             .sqlite_query(&db_path, &events_query, ctx.timeout)
-            .await?;
+            .await;
+        crate::collect_checkpoint!(cx, "post_dcg_sqlite_query_pre_parse");
+        let events = crate::collect_try!(events);
 
         let mut event_rows = Vec::with_capacity(events.len());
         for event in &events {
@@ -176,7 +181,8 @@ impl Collector for DcgCollector {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

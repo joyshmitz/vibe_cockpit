@@ -16,7 +16,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+    Warning,
+};
 
 /// A network event from rano JSONL export
 #[derive(Debug, Deserialize, Serialize)]
@@ -160,17 +163,14 @@ impl Collector for RanoCollector {
         true
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if rano is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("rano".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("rano".to_string()));
         }
 
         // Get last timestamp from cursor for incremental collection
@@ -188,17 +188,21 @@ impl Collector for RanoCollector {
         };
 
         // Run the export command
+        crate::collect_checkpoint!(cx, "pre_rano_export_command");
         let output = match ctx.executor.run_timeout(&cmd, ctx.timeout).await {
             Ok(out) => out,
             Err(e) => {
                 warnings.push(Warning::warn(format!("rano export failed: {e}")));
-                return Ok(CollectResult::empty()
+                let result = CollectResult::empty()
                     .with_warning(Warning::warn(format!("rano export failed: {e}")))
-                    .with_duration(start.elapsed()));
+                    .with_duration(start.elapsed());
+                crate::collect_checkpoint!(cx, "collect_complete");
+                return asupersync::Outcome::Ok(result);
             }
         };
 
         // Parse JSONL lines
+        crate::collect_checkpoint!(cx, "post_rano_export_command_pre_parse");
         let mut event_rows = Vec::new();
         let mut max_ts: Option<DateTime<Utc>> = since_opt;
 
@@ -276,7 +280,8 @@ impl Collector for RanoCollector {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

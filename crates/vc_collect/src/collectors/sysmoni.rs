@@ -17,7 +17,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, RowBatch, Warning,
+};
 
 /// Output schema from `sysmoni --json`
 #[derive(Debug, Deserialize)]
@@ -182,30 +184,30 @@ impl Collector for SysmoniCollector {
     }
 
     #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if sysmoni is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("sysmoni".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("sysmoni".to_string()));
         }
 
         // Run sysmoni --json
-        let output = ctx
-            .executor
-            .run_timeout("sysmoni --json", ctx.timeout)
-            .await?;
+        crate::collect_checkpoint!(cx, "pre_sysmoni_command");
+        let output = crate::collect_try!(
+            ctx.executor
+                .run_timeout("sysmoni --json", ctx.timeout)
+                .await
+        );
 
         // Parse the JSON output
+        crate::collect_checkpoint!(cx, "post_sysmoni_command_pre_parse");
         let data: SysmoniOutput = match serde_json::from_str(&output) {
             Ok(d) => d,
             Err(e) => {
-                return Err(CollectError::ParseError(format!(
+                return asupersync::Outcome::Err(CollectError::ParseError(format!(
                     "Failed to parse sysmoni JSON: {e}"
                 )));
             }
@@ -309,7 +311,8 @@ impl Collector for SysmoniCollector {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
@@ -440,17 +443,23 @@ mod tests {
 
             // Test handles both cases: sysmoni installed or not
             match result {
-                Err(CollectError::ToolNotFound(tool)) => {
+                asupersync::Outcome::Err(CollectError::ToolNotFound(tool)) => {
                     // Expected when sysmoni is not installed
                     assert_eq!(tool, "sysmoni");
                 }
-                Err(_) => {
+                asupersync::Outcome::Err(_) => {
                     // Other errors are acceptable (e.g., command not found, parse error)
                 }
-                Ok(collect_result) => {
+                asupersync::Outcome::Ok(collect_result) => {
                     // If sysmoni is installed, verify the result structure
                     assert!(collect_result.success);
                     assert!(collect_result.total_rows() >= 1); // At least sys_samples row
+                }
+                asupersync::Outcome::Cancelled(reason) => {
+                    panic!("unexpected cancellation in sysmoni test: {reason:?}");
+                }
+                asupersync::Outcome::Panicked(payload) => {
+                    panic!("unexpected panic outcome in sysmoni test: {payload}");
                 }
             }
         });

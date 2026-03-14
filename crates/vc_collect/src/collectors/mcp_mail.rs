@@ -13,7 +13,10 @@
 use async_trait::async_trait;
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+    Warning,
+};
 
 /// Default path to the agent mail `SQLite` database
 pub const DEFAULT_DB_PATH: &str = "~/.mcp_agent_mail_git_mailbox_repo/storage.sqlite3";
@@ -80,29 +83,29 @@ impl Collector for AgentMailCollector {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let db_path = self.expand_path();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if sqlite3 is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("sqlite3".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("sqlite3".to_string()));
         }
 
         // Check if the database file exists
-        if !ctx.executor.file_exists(&db_path, ctx.timeout).await? {
+        crate::collect_checkpoint!(cx, "pre_agent_mail_file_check");
+        if !crate::collect_try!(ctx.executor.file_exists(&db_path, ctx.timeout).await) {
             // Database doesn't exist yet - this is not an error, just no data
             warnings.push(Warning::info(format!(
                 "Agent mail database not found: {db_path}",
             )));
-            return Ok(CollectResult::empty()
+            let result = CollectResult::empty()
                 .with_warning(Warning::info("Database file not found"))
-                .with_duration(start.elapsed()));
+                .with_duration(start.elapsed());
+            crate::collect_checkpoint!(cx, "collect_complete");
+            return asupersync::Outcome::Ok(result);
         }
 
         // Get the last seen message ID from cursor
@@ -132,7 +135,9 @@ impl Collector for AgentMailCollector {
         let messages = ctx
             .executor
             .sqlite_query(&db_path, &messages_query, ctx.timeout)
-            .await?;
+            .await;
+        crate::collect_checkpoint!(cx, "post_agent_mail_messages_query_pre_parse");
+        let messages = crate::collect_try!(messages);
 
         let mut message_rows = Vec::with_capacity(messages.len());
         for msg in &messages {
@@ -231,7 +236,8 @@ impl Collector for AgentMailCollector {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

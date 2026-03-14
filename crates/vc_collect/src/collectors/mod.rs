@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+};
 
 use serde::Deserialize;
 use std::collections::hash_map::DefaultHasher;
@@ -85,12 +87,10 @@ impl Collector for DummyCollector {
         false
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    #[allow(clippy::too_many_lines)]
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Generate a test row
         let row = serde_json::json!({
@@ -106,9 +106,12 @@ impl Collector for DummyCollector {
             rows: vec![row],
         };
 
-        Ok(CollectResult::with_rows(vec![batch])
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult::with_rows(vec![batch])
             .with_cursor(Cursor::now())
-            .with_duration(start.elapsed()))
+            .with_duration(start.elapsed());
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
@@ -129,12 +132,9 @@ impl Collector for IncrementalDummyCollector {
         true
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Get the last primary key or start from 0
         let last_pk = ctx.primary_key_cursor().unwrap_or(0);
@@ -152,9 +152,12 @@ impl Collector for IncrementalDummyCollector {
             rows: vec![row],
         };
 
-        Ok(CollectResult::with_rows(vec![batch])
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult::with_rows(vec![batch])
             .with_cursor(Cursor::primary_key(next_pk))
-            .with_duration(start.elapsed()))
+            .with_duration(start.elapsed());
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
@@ -195,15 +198,13 @@ impl Collector for FailingDummyCollector {
         1
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        _ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, _ctx: &CollectContext) -> CollectOutcome {
+        crate::collect_checkpoint!(cx, "collect_start");
         if self.should_fail {
-            Err(CollectError::Other(self.error_message.clone()))
+            asupersync::Outcome::Err(CollectError::Other(self.error_message.clone()))
         } else {
-            Ok(CollectResult::empty())
+            crate::collect_checkpoint!(cx, "collect_complete");
+            asupersync::Outcome::Ok(CollectResult::empty())
         }
     }
 }
@@ -236,14 +237,11 @@ impl Collector for ToolRequiringDummyCollector {
         Some(self.required)
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
+        crate::collect_checkpoint!(cx, "collect_start");
         // Check tool availability first
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound(self.required.to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound(self.required.to_string()));
         }
 
         let row = serde_json::json!({
@@ -252,10 +250,13 @@ impl Collector for ToolRequiringDummyCollector {
             "available": true,
         });
 
-        Ok(CollectResult::with_rows(vec![RowBatch {
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult::with_rows(vec![RowBatch {
             table: "tool_checks".to_string(),
             rows: vec![row],
-        }]))
+        }]);
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
@@ -282,12 +283,9 @@ impl Collector for BatchDummyCollector {
         1
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Respect max_rows limit
         let count = self.row_count.min(ctx.max_rows);
@@ -302,11 +300,14 @@ impl Collector for BatchDummyCollector {
             })
             .collect();
 
-        Ok(CollectResult::with_rows(vec![RowBatch {
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult::with_rows(vec![RowBatch {
             table: "batch_dummy".to_string(),
             rows,
         }])
-        .with_duration(start.elapsed()))
+        .with_duration(start.elapsed());
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
@@ -370,6 +371,7 @@ impl RuCollector {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl Collector for RuCollector {
     fn name(&self) -> &'static str {
@@ -388,22 +390,21 @@ impl Collector for RuCollector {
         false // Stateless - each poll is a fresh snapshot
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut rows = vec![];
         let mut warnings = vec![];
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // First, get repo list (for populating the repos table)
+        crate::collect_checkpoint!(cx, "pre_ru_list_command");
         let list_result = ctx
             .executor
             .run_timeout("ru list --json", ctx.timeout)
             .await;
 
         if let Ok(output) = list_result {
+            crate::collect_checkpoint!(cx, "post_ru_list_command_pre_parse");
             match serde_json::from_str::<RuListOutput>(&output) {
                 Ok(list) => {
                     let repo_rows: Vec<serde_json::Value> = list
@@ -437,48 +438,52 @@ impl Collector for RuCollector {
         }
 
         // Then, get status (no-fetch to avoid network)
+        crate::collect_checkpoint!(cx, "pre_ru_status_command");
         let status_result = ctx
             .executor
             .run_timeout("ru status --no-fetch --json", ctx.timeout)
             .await;
 
         match status_result {
-            Ok(output) => match serde_json::from_str::<RuStatusOutput>(&output) {
-                Ok(status) => {
-                    let status_rows: Vec<serde_json::Value> = status
-                        .repos
-                        .iter()
-                        .map(|r| {
-                            let identifier = r.url.as_ref().unwrap_or(&r.path);
-                            serde_json::json!({
-                                "machine_id": &ctx.machine_id,
-                                "collected_at": ctx.collected_at.to_rfc3339(),
-                                "repo_id": Self::hash_repo(identifier),
-                                "branch": &r.branch,
-                                "dirty": r.dirty,
-                                "ahead": r.ahead,
-                                "behind": r.behind,
-                                "modified_count": r.modified_files.len(),
-                                "untracked_count": r.untracked_files.len(),
-                                "raw_json": serde_json::to_string(&r).unwrap_or_default(),
+            Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_ru_status_command_pre_parse");
+                match serde_json::from_str::<RuStatusOutput>(&output) {
+                    Ok(status) => {
+                        let status_rows: Vec<serde_json::Value> = status
+                            .repos
+                            .iter()
+                            .map(|r| {
+                                let identifier = r.url.as_ref().unwrap_or(&r.path);
+                                serde_json::json!({
+                                    "machine_id": &ctx.machine_id,
+                                    "collected_at": ctx.collected_at.to_rfc3339(),
+                                    "repo_id": Self::hash_repo(identifier),
+                                    "branch": &r.branch,
+                                    "dirty": r.dirty,
+                                    "ahead": r.ahead,
+                                    "behind": r.behind,
+                                    "modified_count": r.modified_files.len(),
+                                    "untracked_count": r.untracked_files.len(),
+                                    "raw_json": serde_json::to_string(&r).unwrap_or_default(),
+                                })
                             })
-                        })
-                        .collect();
+                            .collect();
 
-                    if !status_rows.is_empty() {
-                        rows.push(RowBatch {
-                            table: "repo_status_snapshots".to_string(),
-                            rows: status_rows,
-                        });
+                        if !status_rows.is_empty() {
+                            rows.push(RowBatch {
+                                table: "repo_status_snapshots".to_string(),
+                                rows: status_rows,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        warnings.push(
+                            Warning::error(format!("Failed to parse ru status: {e}"))
+                                .with_context(output),
+                        );
                     }
                 }
-                Err(e) => {
-                    warnings.push(
-                        Warning::error(format!("Failed to parse ru status: {e}"))
-                            .with_context(output),
-                    );
-                }
-            },
+            }
             Err(e) => {
                 warnings.push(Warning::error(format!("Failed to run ru status: {e}")));
             }
@@ -487,7 +492,8 @@ impl Collector for RuCollector {
         // Determine success: at least one command must have worked
         let success = rows.iter().any(|batch| !batch.rows.is_empty());
 
-        Ok(CollectResult {
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult {
             rows,
             new_cursor: None, // Stateless
             raw_artifacts: vec![],
@@ -499,7 +505,9 @@ impl Collector for RuCollector {
             } else {
                 Some("Failed to collect repository data".to_string())
             },
-        })
+        };
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
@@ -565,28 +573,29 @@ impl Collector for FallbackProbeCollector {
         false // Each collection is a point-in-time snapshot
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let mut raw_outputs = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Detect platform
         let platform = Self::detect_platform(ctx).await;
+        crate::collect_checkpoint!(cx, "post_platform_detect");
 
         // Collect uptime and load averages
         let uptime_data =
             Self::collect_uptime(ctx, &platform, &mut warnings, &mut raw_outputs).await;
+        crate::collect_checkpoint!(cx, "post_uptime_collect");
 
         // Collect memory stats
         let memory_data =
             Self::collect_memory(ctx, &platform, &mut warnings, &mut raw_outputs).await;
+        crate::collect_checkpoint!(cx, "post_memory_collect");
 
         // Collect disk usage
         let disk_usage = Self::collect_disk_usage(ctx, &mut warnings, &mut raw_outputs).await;
+        crate::collect_checkpoint!(cx, "post_disk_collect");
 
         // Build the row
         let row = serde_json::json!({
@@ -619,7 +628,8 @@ impl Collector for FallbackProbeCollector {
             result = result.with_warning(Warning::warn(warning));
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
@@ -1022,7 +1032,10 @@ mod tests {
 
             let result = collector.collect(&cx, &ctx).await;
             assert!(result.is_err());
-            assert!(matches!(result, Err(CollectError::Other(_))));
+            assert!(matches!(
+                result,
+                asupersync::Outcome::Err(CollectError::Other(_))
+            ));
         });
     }
 
@@ -1072,7 +1085,10 @@ mod tests {
 
             let result = collector.collect(&cx, &ctx).await;
             assert!(result.is_err());
-            assert!(matches!(result, Err(CollectError::ToolNotFound(_))));
+            assert!(matches!(
+                result,
+                asupersync::Outcome::Err(CollectError::ToolNotFound(_))
+            ));
         });
     }
 

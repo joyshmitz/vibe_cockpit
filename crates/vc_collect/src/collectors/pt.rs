@@ -17,7 +17,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+    Warning,
+};
 
 /// A process record from pt output
 #[derive(Debug, Deserialize, Serialize)]
@@ -224,17 +227,14 @@ impl Collector for PtCollector {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if pt is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("pt".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("pt".to_string()));
         }
 
         // Get last timestamp from cursor for incremental collection
@@ -251,24 +251,30 @@ impl Collector for PtCollector {
         };
 
         // Run the command
+        crate::collect_checkpoint!(cx, "pre_pt_list_command");
         let output = match ctx.executor.run_timeout(&cmd, ctx.timeout).await {
             Ok(out) => out,
             Err(e) => {
                 warnings.push(Warning::warn(format!("pt list failed: {e}")));
-                return Ok(CollectResult::empty()
+                let result = CollectResult::empty()
                     .with_warning(Warning::warn(format!("pt list failed: {e}")))
-                    .with_duration(start.elapsed()));
+                    .with_duration(start.elapsed());
+                crate::collect_checkpoint!(cx, "collect_complete");
+                return asupersync::Outcome::Ok(result);
             }
         };
 
         // Parse the JSON output
+        crate::collect_checkpoint!(cx, "post_pt_list_command_pre_parse");
         let pt_output: PtOutput = match serde_json::from_str(&output) {
             Ok(o) => o,
             Err(e) => {
                 warnings.push(Warning::warn(format!("Failed to parse pt output: {e}")));
-                return Ok(CollectResult::empty()
+                let result = CollectResult::empty()
                     .with_warning(Warning::warn(format!("Failed to parse pt output: {e}")))
-                    .with_duration(start.elapsed()));
+                    .with_duration(start.elapsed());
+                crate::collect_checkpoint!(cx, "collect_complete");
+                return asupersync::Outcome::Ok(result);
             }
         };
 
@@ -386,7 +392,8 @@ impl Collector for PtCollector {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

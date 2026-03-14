@@ -14,7 +14,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+    Warning,
+};
 
 /// Default path to the rch compilations JSONL file
 pub const DEFAULT_JSONL_PATH: &str = "~/.rch/compilations.jsonl";
@@ -164,29 +167,29 @@ impl Collector for RchCollector {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let jsonl_path = self.expand_path();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if rch is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("rch".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("rch".to_string()));
         }
 
         // Get file info and check if it exists
-        let file_stat = ctx.executor.stat(&jsonl_path, ctx.timeout).await?;
+        crate::collect_checkpoint!(cx, "pre_rch_stat");
+        let file_stat = crate::collect_try!(ctx.executor.stat(&jsonl_path, ctx.timeout).await);
         if !file_stat.exists {
             warnings.push(Warning::info(format!(
                 "rch JSONL file not found: {jsonl_path}",
             )));
-            return Ok(CollectResult::empty()
+            let result = CollectResult::empty()
                 .with_warning(Warning::info("JSONL file not found"))
-                .with_duration(start.elapsed()));
+                .with_duration(start.elapsed());
+            crate::collect_checkpoint!(cx, "collect_complete");
+            return asupersync::Outcome::Ok(result);
         }
 
         // Get current offset from cursor
@@ -203,15 +206,19 @@ impl Collector for RchCollector {
         };
 
         // Read new lines from the file
+        crate::collect_checkpoint!(cx, "pre_rch_read_jsonl");
         let content_bytes = if start_offset > 0 {
-            ctx.executor
-                .read_file_range(&jsonl_path, start_offset, ctx.timeout)
-                .await?
+            crate::collect_try!(
+                ctx.executor
+                    .read_file_range(&jsonl_path, start_offset, ctx.timeout)
+                    .await
+            )
         } else {
-            ctx.executor.read_file(&jsonl_path, ctx.timeout).await?
+            crate::collect_try!(ctx.executor.read_file(&jsonl_path, ctx.timeout).await)
         };
 
         // Parse JSONL lines
+        crate::collect_checkpoint!(cx, "post_rch_read_jsonl_pre_parse");
         let mut compilation_rows = Vec::new();
         let mut bytes_read = 0u64;
         let mut current_pos = 0;
@@ -271,12 +278,14 @@ impl Collector for RchCollector {
 
         // Also try to get worker status via rch status
         let mut metrics_rows = Vec::new();
+        crate::collect_checkpoint!(cx, "pre_rch_status_command");
         match ctx
             .executor
             .run_timeout("rch status --json", ctx.timeout)
             .await
         {
             Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_rch_status_command_pre_parse");
                 if let Ok(status) = serde_json::from_str::<RchStatus>(&output) {
                     metrics_rows.push(serde_json::json!({
                         "machine_id": ctx.machine_id,
@@ -322,7 +331,8 @@ impl Collector for RchCollector {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

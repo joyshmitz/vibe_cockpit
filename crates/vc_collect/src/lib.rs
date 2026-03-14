@@ -57,10 +57,7 @@ where
 
     asupersync_rt
         .block_on(async {
-            asupersync_tokio_compat::runtime::with_tokio_context(&root_cx, || async move {
-                future.await
-            })
-            .await
+            asupersync_tokio_compat::runtime::with_tokio_context(&root_cx, || future).await
         })
         .expect("test future should complete")
 }
@@ -210,6 +207,9 @@ pub struct CollectResult {
     pub error: Option<String>,
 }
 
+/// Terminal collector outcome, preserving cancellation distinctly from errors.
+pub type CollectOutcome = asupersync::Outcome<CollectResult, CollectError>;
+
 /// Warning from collection
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warning {
@@ -219,6 +219,54 @@ pub struct Warning {
     pub message: String,
     /// Additional context
     pub context: Option<String>,
+}
+
+/// Observe collector cancellation at a named lifecycle checkpoint.
+#[must_use]
+pub fn checkpoint_reason(
+    cx: &asupersync::Cx,
+    checkpoint: &'static str,
+) -> Option<asupersync::CancelReason> {
+    tracing::debug!(
+        checkpoint,
+        cancel_requested = cx.is_cancel_requested(),
+        "Collector checkpoint"
+    );
+
+    match cx.checkpoint() {
+        Ok(()) => None,
+        Err(error) => {
+            let reason = cx
+                .cancel_reason()
+                .unwrap_or_else(asupersync::CancelReason::parent_cancelled);
+            tracing::debug!(
+                checkpoint,
+                ?reason,
+                error = %error,
+                "Collector checkpoint triggered cancellation"
+            );
+            Some(reason)
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! collect_checkpoint {
+    ($cx:expr, $name:expr) => {
+        if let Some(reason) = $crate::checkpoint_reason($cx, $name) {
+            return asupersync::Outcome::Cancelled(reason);
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! collect_try {
+    ($expr:expr) => {
+        match $expr {
+            Ok(value) => value,
+            Err(error) => return asupersync::Outcome::Err(error.into()),
+        }
+    };
 }
 
 impl Warning {
@@ -554,11 +602,7 @@ pub trait Collector: Send + Sync {
     /// collector task. It enables structured cancellation, checkpoints,
     /// and budget enforcement. Implementations that do not yet use `cx`
     /// may prefix it with `_`.
-    async fn collect(
-        &self,
-        cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError>;
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome;
 
     /// Check if the required tool is available
     async fn check_availability(&self, ctx: &CollectContext) -> bool {
@@ -847,7 +891,7 @@ mod tests {
     fn test_three_collectors_all_succeed() {
         crate::run_async_test(async {
             let cx = asupersync::Cx::for_testing();
-            let results: Vec<Result<CollectResult, CollectError>> = {
+            let results: Vec<CollectOutcome> = {
                 let c1 = collectors::DummyCollector;
                 let c2 = collectors::DummyCollector;
                 let c3 = collectors::DummyCollector;
@@ -864,7 +908,10 @@ mod tests {
 
             assert_eq!(results.len(), 3);
             for r in &results {
-                assert!(r.as_ref().unwrap().success);
+                match r {
+                    asupersync::Outcome::Ok(result) => assert!(result.success),
+                    other => panic!("expected successful outcome, got {other:?}"),
+                }
             }
         });
     }
@@ -908,7 +955,7 @@ mod tests {
     #[test]
     fn test_zero_collectors_completes() {
         crate::run_async_test(async {
-            let results: Vec<Result<CollectResult, CollectError>> = vec![];
+            let results: Vec<CollectOutcome> = vec![];
             assert!(results.is_empty(), "zero-child region should be empty");
         });
     }
@@ -920,5 +967,38 @@ mod tests {
         let cx2 = cx.clone();
         // Both should have the same underlying state
         assert_eq!(cx.region_id(), cx2.region_id());
+    }
+
+    #[test]
+    fn test_checkpoint_reason_none_when_active() {
+        let cx = asupersync::Cx::for_testing();
+        assert!(checkpoint_reason(&cx, "active_checkpoint").is_none());
+    }
+
+    #[test]
+    fn test_checkpoint_reason_returns_cancel_reason_when_cancelled() {
+        let cx = asupersync::Cx::for_testing();
+        cx.cancel_with(
+            asupersync::CancelKind::User,
+            Some("checkpoint cancellation"),
+        );
+
+        let reason = checkpoint_reason(&cx, "cancelled_checkpoint")
+            .expect("cancelled context should yield a cancel reason");
+
+        assert_eq!(reason.kind, asupersync::CancelKind::User);
+    }
+
+    #[test]
+    fn test_dummy_collector_returns_cancelled_when_cx_cancelled() {
+        crate::run_async_test(async {
+            let collector = collectors::DummyCollector;
+            let cx = asupersync::Cx::for_testing();
+            cx.cancel_with(asupersync::CancelKind::User, Some("test cancellation"));
+            let ctx = CollectContext::local("test", Duration::from_secs(30));
+
+            let result = collector.collect(&cx, &ctx).await;
+            assert!(result.is_cancelled());
+        });
     }
 }

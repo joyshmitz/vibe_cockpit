@@ -18,7 +18,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, RowBatch, Warning,
+};
 
 /// Output schema from `cass health --json`
 #[derive(Debug, Deserialize)]
@@ -103,29 +105,28 @@ impl Collector for CassCollector {
     }
 
     #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let mut batches = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if cass is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("cass".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("cass".to_string()));
         }
 
         let collected_at = ctx.collected_at.to_rfc3339();
 
         // Collect health status
+        crate::collect_checkpoint!(cx, "pre_cass_health_command");
         match ctx
             .executor
             .run_timeout("cass health --json", ctx.timeout)
             .await
         {
             Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_cass_health_command_pre_parse");
                 match serde_json::from_str::<CassHealthOutput>(&output) {
                     Ok(health) => {
                         let row = serde_json::json!({
@@ -165,12 +166,14 @@ impl Collector for CassCollector {
         }
 
         // Collect stats
+        crate::collect_checkpoint!(cx, "pre_cass_stats_command");
         match ctx
             .executor
             .run_timeout("cass stats --json", ctx.timeout)
             .await
         {
             Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_cass_stats_command_pre_parse");
                 match serde_json::from_str::<CassStatsOutput>(&output) {
                     Ok(stats) => {
                         let mut stats_rows = Vec::new();
@@ -239,13 +242,15 @@ impl Collector for CassCollector {
             }
         }
 
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
         let mut result = CollectResult::with_rows(batches).with_duration(start.elapsed());
 
         for warning in warnings {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
@@ -355,16 +360,22 @@ mod tests {
 
             // Test handles both cases: cass installed or not
             match result {
-                Err(CollectError::ToolNotFound(tool)) => {
+                asupersync::Outcome::Err(CollectError::ToolNotFound(tool)) => {
                     // Expected when cass is not installed
                     assert_eq!(tool, "cass");
                 }
-                Err(_) => {
+                asupersync::Outcome::Err(_) => {
                     // Other errors are acceptable (e.g., command not found, parse error)
                 }
-                Ok(collect_result) => {
+                asupersync::Outcome::Ok(collect_result) => {
                     // If cass is installed, verify the result structure
                     assert!(collect_result.success);
+                }
+                asupersync::Outcome::Cancelled(reason) => {
+                    panic!("unexpected cancellation in cass test: {reason:?}");
+                }
+                asupersync::Outcome::Panicked(payload) => {
+                    panic!("unexpected panic outcome in cass test: {payload}");
                 }
             }
         });

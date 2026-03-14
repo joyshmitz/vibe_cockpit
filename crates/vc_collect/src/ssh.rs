@@ -30,6 +30,9 @@ pub enum SshError {
     #[error("Command failed with exit code {code}: {stderr}")]
     CommandFailed { code: u32, stderr: String },
 
+    #[error("SSH operation cancelled: {0:?}")]
+    Cancelled(asupersync::CancelReason),
+
     #[error("No SSH configuration for machine {0}")]
     NoSshConfig(String),
 
@@ -160,6 +163,50 @@ impl SshRunner {
         self.exec_on_session(&session_guard, cmd).await
     }
 
+    /// Execute a command on a remote machine while observing cancellation checkpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SshError::Cancelled`] when the caller's `Cx` is cancelled at a
+    /// connection or command boundary.
+    #[instrument(skip(self, cx, machine), fields(machine_id = %machine.machine_id))]
+    pub async fn exec_with_cx(
+        &self,
+        cx: &asupersync::Cx,
+        machine: &Machine,
+        cmd: &str,
+    ) -> Result<CommandOutput, SshError> {
+        if let Some(reason) = crate::checkpoint_reason(cx, "pre_ssh_connect") {
+            debug!(
+                machine_id = %machine.machine_id,
+                checkpoint = "pre_ssh_connect",
+                cleanup_action = "skip_connect",
+                ?reason,
+                "SSH execution cancelled"
+            );
+            return Err(SshError::Cancelled(reason));
+        }
+
+        let session = self.get_or_connect(machine).await?;
+        let session_guard = session.lock().await;
+
+        if let Some(reason) = crate::checkpoint_reason(cx, "post_ssh_connect_pre_command") {
+            drop(session_guard);
+            self.close(&machine.machine_id);
+            debug!(
+                machine_id = %machine.machine_id,
+                checkpoint = "post_ssh_connect_pre_command",
+                cleanup_action = "close_connection",
+                ?reason,
+                "SSH execution cancelled"
+            );
+            return Err(SshError::Cancelled(reason));
+        }
+
+        self.exec_on_session_with_cx(cx, &machine.machine_id, &session_guard, cmd)
+            .await
+    }
+
     /// Execute command with custom timeout
     ///
     /// # Errors
@@ -172,6 +219,26 @@ impl SshRunner {
         timeout: Duration,
     ) -> Result<CommandOutput, SshError> {
         match asupersync::time::timeout(wall_now(), timeout, self.exec(machine, cmd)).await {
+            Ok(result) => result,
+            Err(_) => Err(SshError::Timeout(timeout)),
+        }
+    }
+
+    /// Execute command with custom timeout and cancellation checkpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command fails, times out, or is cancelled.
+    pub async fn exec_timeout_with_cx(
+        &self,
+        cx: &asupersync::Cx,
+        machine: &Machine,
+        cmd: &str,
+        timeout: Duration,
+    ) -> Result<CommandOutput, SshError> {
+        match asupersync::time::timeout(wall_now(), timeout, self.exec_with_cx(cx, machine, cmd))
+            .await
+        {
             Ok(result) => result,
             Err(_) => Err(SshError::Timeout(timeout)),
         }
@@ -466,6 +533,73 @@ impl SshRunner {
             exit_code: exit_code.unwrap_or(0),
         })
     }
+
+    async fn exec_on_session_with_cx(
+        &self,
+        cx: &asupersync::Cx,
+        machine_id: &str,
+        session: &SshSession,
+        cmd: &str,
+    ) -> Result<CommandOutput, SshError> {
+        debug!(cmd = %cmd, "Executing command");
+
+        let mut channel = session
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::ChannelError(e.to_string()))?;
+
+        channel
+            .exec(true, cmd)
+            .await
+            .map_err(|e| SshError::ChannelError(e.to_string()))?;
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = None;
+
+        loop {
+            if let Some(reason) = crate::checkpoint_reason(cx, "ssh_command_wait") {
+                let _ = channel.eof().await;
+                let _ = channel.close().await;
+                self.close(machine_id);
+                debug!(
+                    machine_id = %machine_id,
+                    checkpoint = "ssh_command_wait",
+                    cleanup_action = "close_channel_and_connection",
+                    ?reason,
+                    "SSH execution cancelled"
+                );
+                return Err(SshError::Cancelled(reason));
+            }
+
+            match asupersync::time::timeout(wall_now(), self.config.command_timeout, channel.wait())
+                .await
+            {
+                Ok(Some(msg)) => match msg {
+                    russh::ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                    russh::ChannelMsg::ExtendedData { data, ext } => {
+                        if ext == 1 {
+                            stderr.extend_from_slice(&data);
+                        }
+                    }
+                    russh::ChannelMsg::ExitStatus { exit_status } => {
+                        exit_code = Some(exit_status);
+                    }
+                    russh::ChannelMsg::Eof => break,
+                    _ => {}
+                },
+                Ok(None) => break,
+                Err(_) => return Err(SshError::Timeout(self.config.command_timeout)),
+            }
+        }
+
+        Ok(CommandOutput {
+            stdout: String::from_utf8_lossy(&stdout).to_string(),
+            stderr: String::from_utf8_lossy(&stderr).to_string(),
+            exit_code: exit_code.unwrap_or(0),
+        })
+    }
 }
 
 impl Default for SshRunner {
@@ -579,6 +713,7 @@ impl<W: std::io::Write> std::io::Write for Base64Encoder<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::{Machine, MachineStatus};
 
     #[test]
     fn test_ssh_runner_config_default() {
@@ -679,5 +814,42 @@ mod tests {
         let runner = SshRunner::new();
         runner.close_all();
         assert_eq!(runner.pool_stats().active_connections, 0);
+    }
+
+    #[test]
+    fn test_exec_with_cx_cancelled_before_connect_skips_connection_attempt() {
+        crate::run_async_test(async {
+            let runner = SshRunner::new();
+            let cx = asupersync::Cx::for_testing();
+            cx.cancel_with(
+                asupersync::CancelKind::User,
+                Some("cancel before ssh connection"),
+            );
+
+            let machine = Machine {
+                machine_id: "remote-test".to_string(),
+                hostname: "remote-test".to_string(),
+                display_name: None,
+                ssh_host: None,
+                ssh_user: None,
+                ssh_key_path: None,
+                ssh_port: 22,
+                is_local: false,
+                os_type: None,
+                arch: None,
+                added_at: None,
+                last_seen_at: None,
+                last_probe_at: None,
+                status: MachineStatus::Unknown,
+                tags: vec![],
+                metadata: None,
+                enabled: true,
+            };
+
+            let result = runner.exec_with_cx(&cx, &machine, "echo hello").await;
+
+            assert!(matches!(result, Err(SshError::Cancelled(_))));
+            assert_eq!(runner.pool_stats().active_connections, 0);
+        });
     }
 }

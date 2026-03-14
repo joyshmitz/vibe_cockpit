@@ -43,6 +43,8 @@ use crate::machine::{Machine, MachineFilter, MachineRegistry};
 use crate::ssh::{SshError, SshRunner};
 use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
 
+type RemoteCollectOutcome = asupersync::Outcome<CollectResult, RemoteCollectError>;
+
 /// Errors specific to remote collection
 #[derive(Error, Debug)]
 pub enum RemoteCollectError {
@@ -85,7 +87,7 @@ pub struct MachineCollectResult {
     /// Machine ID
     pub machine_id: String,
     /// Collection result (if successful)
-    pub result: Result<CollectResult, RemoteCollectError>,
+    pub result: RemoteCollectOutcome,
     /// Duration of the collection
     pub duration: Duration,
     /// Whether the machine was online
@@ -96,13 +98,22 @@ impl MachineCollectResult {
     /// Check if collection succeeded
     #[must_use]
     pub fn success(&self) -> bool {
-        self.result.as_ref().is_ok_and(|r| r.success)
+        matches!(&self.result, asupersync::Outcome::Ok(result) if result.success)
     }
 
     /// Get total rows collected (0 if failed)
     #[must_use]
     pub fn total_rows(&self) -> usize {
-        self.result.as_ref().map_or(0, CollectResult::total_rows)
+        match &self.result {
+            asupersync::Outcome::Ok(result) => result.total_rows(),
+            _ => 0,
+        }
+    }
+
+    /// Check if collection was cancelled.
+    #[must_use]
+    pub fn cancelled(&self) -> bool {
+        self.result.is_cancelled()
     }
 }
 
@@ -115,6 +126,8 @@ pub struct CollectionSummary {
     pub machines_succeeded: usize,
     /// Machines that failed
     pub machines_failed: usize,
+    /// Machines that were cancelled
+    pub machines_cancelled: usize,
     /// Machines that were offline
     pub machines_offline: usize,
     /// Total rows collected
@@ -138,6 +151,8 @@ impl CollectionSummary {
         if result.success() {
             self.machines_succeeded += 1;
             self.total_rows += result.total_rows();
+        } else if result.cancelled() {
+            self.machines_cancelled += 1;
         } else {
             self.machines_failed += 1;
         }
@@ -235,14 +250,17 @@ impl<C: Collector> RemoteCollector<C> {
     ))]
     pub async fn collect_remote(
         &self,
+        cx: &asupersync::Cx,
         machine: &Machine,
         cursor: Option<&Cursor>,
-    ) -> Result<CollectResult, RemoteCollectError> {
+    ) -> RemoteCollectOutcome {
         let start = Instant::now();
 
         // Verify SSH config exists
         if machine.ssh_config().is_none() && !machine.is_local {
-            return Err(RemoteCollectError::NoSshConfig(machine.machine_id.clone()));
+            return asupersync::Outcome::Err(RemoteCollectError::NoSshConfig(
+                machine.machine_id.clone(),
+            ));
         }
 
         // Build the remote command
@@ -250,13 +268,20 @@ impl<C: Collector> RemoteCollector<C> {
         debug!(cmd = %cmd, "Executing remote command");
 
         // Execute the command
-        let output = self
+        let output = match self
             .ssh
-            .exec_timeout(machine, &cmd, self.config.timeout)
-            .await?;
+            .exec_timeout_with_cx(cx, machine, &cmd, self.config.timeout)
+            .await
+        {
+            Ok(output) => output,
+            Err(SshError::Cancelled(reason)) => return asupersync::Outcome::Cancelled(reason),
+            Err(error) => return asupersync::Outcome::Err(error.into()),
+        };
+
+        crate::collect_checkpoint!(cx, "post_ssh_command_pre_parse");
 
         if output.exit_code != 0 {
-            return Err(RemoteCollectError::RemoteCommandFailed {
+            return asupersync::Outcome::Err(RemoteCollectError::RemoteCommandFailed {
                 machine: machine.machine_id.clone(),
                 cmd,
                 exit_code: output.exit_code,
@@ -265,12 +290,17 @@ impl<C: Collector> RemoteCollector<C> {
         }
 
         // Parse the JSON output
-        let mut result: CollectResult = serde_json::from_str(&output.stdout).map_err(|e| {
-            RemoteCollectError::ParseError(format!(
-                "Failed to parse collector output: {e}. Output was: {}",
-                output.stdout.chars().take(200).collect::<String>()
-            ))
-        })?;
+        let mut result: CollectResult = match serde_json::from_str(&output.stdout) {
+            Ok(result) => result,
+            Err(e) => {
+                return asupersync::Outcome::Err(RemoteCollectError::ParseError(format!(
+                    "Failed to parse collector output: {e}. Output was: {}",
+                    output.stdout.chars().take(200).collect::<String>()
+                )));
+            }
+        };
+
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
 
         // Tag all rows with machine_id
         Self::tag_rows_with_machine(&mut result, &machine.machine_id);
@@ -278,7 +308,8 @@ impl<C: Collector> RemoteCollector<C> {
         // Update duration
         result.duration = start.elapsed();
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 
     /// Build the command to execute remotely
@@ -445,7 +476,7 @@ impl MultiMachineCollector {
                     if machine.ssh_config().is_none() {
                         return MachineCollectResult {
                             machine_id,
-                            result: Err(RemoteCollectError::NoSshConfig(
+                            result: asupersync::Outcome::Err(RemoteCollectError::NoSshConfig(
                                 machine.machine_id.clone(),
                             )),
                             duration: machine_start.elapsed(),
@@ -457,7 +488,7 @@ impl MultiMachineCollector {
                     let remote = RemoteCollector::with_config(collector, ssh, config);
 
                     // Execute collection
-                    let result = remote.collect_remote(&machine, cursor.as_ref()).await;
+                    let result = remote.collect_remote(&cx, &machine, cursor.as_ref()).await;
 
                     MachineCollectResult {
                         machine_id,
@@ -483,6 +514,7 @@ impl MultiMachineCollector {
             machine_count,
             machines_succeeded = summary.machines_succeeded,
             machines_failed = summary.machines_failed,
+            machines_cancelled = summary.machines_cancelled,
             total_rows = summary.total_rows,
             duration_ms = summary.total_duration.as_millis(),
             "Collection region: all tasks drained"
@@ -580,7 +612,7 @@ impl MultiMachineCollector {
                     if machine.ssh_config().is_none() {
                         return MachineCollectResult {
                             machine_id,
-                            result: Err(RemoteCollectError::NoSshConfig(
+                            result: asupersync::Outcome::Err(RemoteCollectError::NoSshConfig(
                                 machine.machine_id.clone(),
                             )),
                             duration: machine_start.elapsed(),
@@ -589,7 +621,7 @@ impl MultiMachineCollector {
                     }
 
                     let remote = RemoteCollector::with_config(collector, ssh, config);
-                    let result = remote.collect_remote(&machine, cursor.as_ref()).await;
+                    let result = remote.collect_remote(&cx, &machine, cursor.as_ref()).await;
 
                     MachineCollectResult {
                         machine_id,
@@ -627,7 +659,7 @@ impl MultiMachineCollector {
             total_duration += mcr.duration;
 
             match &mcr.result {
-                Ok(result) => {
+                asupersync::Outcome::Ok(result) => {
                     any_success = true;
 
                     // Merge rows by table
@@ -641,10 +673,23 @@ impl MultiMachineCollector {
                     // Collect warnings
                     all_warnings.extend(result.warnings.clone());
                 }
-                Err(e) => {
+                asupersync::Outcome::Err(e) => {
                     errors.push(format!("{}: {e}", mcr.machine_id));
                     all_warnings.push(Warning::error(format!(
                         "Collection failed on {}: {e}",
+                        mcr.machine_id
+                    )));
+                }
+                asupersync::Outcome::Cancelled(reason) => {
+                    all_warnings.push(Warning::info(format!(
+                        "Collection cancelled on {}: {reason:?}",
+                        mcr.machine_id
+                    )));
+                }
+                asupersync::Outcome::Panicked(payload) => {
+                    errors.push(format!("{}: {payload}", mcr.machine_id));
+                    all_warnings.push(Warning::error(format!(
+                        "Collection panicked on {}: {payload}",
                         mcr.machine_id
                     )));
                 }
@@ -696,7 +741,7 @@ mod tests {
         // Add successful result
         summary.add_result(MachineCollectResult {
             machine_id: "machine1".to_string(),
-            result: Ok(CollectResult::with_rows(vec![RowBatch {
+            result: asupersync::Outcome::Ok(CollectResult::with_rows(vec![RowBatch {
                 table: "test".to_string(),
                 rows: vec![serde_json::json!({"key": "value"})],
             }])),
@@ -707,7 +752,9 @@ mod tests {
         // Add failed result
         summary.add_result(MachineCollectResult {
             machine_id: "machine2".to_string(),
-            result: Err(RemoteCollectError::MachineOffline("machine2".to_string())),
+            result: asupersync::Outcome::Err(RemoteCollectError::MachineOffline(
+                "machine2".to_string(),
+            )),
             duration: Duration::from_millis(50),
             was_online: false,
         });
@@ -715,6 +762,7 @@ mod tests {
         assert_eq!(summary.machines_attempted, 2);
         assert_eq!(summary.machines_succeeded, 1);
         assert_eq!(summary.machines_failed, 1);
+        assert_eq!(summary.machines_cancelled, 0);
         assert_eq!(summary.machines_offline, 1);
         assert_eq!(summary.total_rows, 1);
         assert!((summary.success_rate() - 50.0).abs() < f64::EPSILON);
@@ -724,7 +772,7 @@ mod tests {
     fn test_machine_collect_result_success() {
         let result = MachineCollectResult {
             machine_id: "test".to_string(),
-            result: Ok(CollectResult::with_rows(vec![RowBatch {
+            result: asupersync::Outcome::Ok(CollectResult::with_rows(vec![RowBatch {
                 table: "test".to_string(),
                 rows: vec![serde_json::json!({"a": 1}), serde_json::json!({"b": 2})],
             }])),
@@ -740,12 +788,28 @@ mod tests {
     fn test_machine_collect_result_failure() {
         let result = MachineCollectResult {
             machine_id: "test".to_string(),
-            result: Err(RemoteCollectError::MachineOffline("test".to_string())),
+            result: asupersync::Outcome::Err(RemoteCollectError::MachineOffline(
+                "test".to_string(),
+            )),
             duration: Duration::from_millis(50),
             was_online: false,
         };
 
         assert!(!result.success());
+        assert_eq!(result.total_rows(), 0);
+    }
+
+    #[test]
+    fn test_machine_collect_result_cancelled() {
+        let result = MachineCollectResult {
+            machine_id: "test".to_string(),
+            result: asupersync::Outcome::Cancelled(asupersync::CancelReason::user("cancelled")),
+            duration: Duration::from_millis(10),
+            was_online: true,
+        };
+
+        assert!(!result.success());
+        assert!(result.cancelled());
         assert_eq!(result.total_rows(), 0);
     }
 
@@ -773,7 +837,7 @@ mod tests {
         let results = vec![
             MachineCollectResult {
                 machine_id: "m1".to_string(),
-                result: Ok(CollectResult::with_rows(vec![RowBatch {
+                result: asupersync::Outcome::Ok(CollectResult::with_rows(vec![RowBatch {
                     table: "test".to_string(),
                     rows: vec![serde_json::json!({"id": 1})],
                 }])),
@@ -782,7 +846,7 @@ mod tests {
             },
             MachineCollectResult {
                 machine_id: "m2".to_string(),
-                result: Ok(CollectResult::with_rows(vec![RowBatch {
+                result: asupersync::Outcome::Ok(CollectResult::with_rows(vec![RowBatch {
                     table: "test".to_string(),
                     rows: vec![serde_json::json!({"id": 2})],
                 }])),
@@ -804,7 +868,7 @@ mod tests {
         let results = vec![
             MachineCollectResult {
                 machine_id: "m1".to_string(),
-                result: Ok(CollectResult::with_rows(vec![RowBatch {
+                result: asupersync::Outcome::Ok(CollectResult::with_rows(vec![RowBatch {
                     table: "test".to_string(),
                     rows: vec![serde_json::json!({"id": 1})],
                 }])),
@@ -813,7 +877,9 @@ mod tests {
             },
             MachineCollectResult {
                 machine_id: "m2".to_string(),
-                result: Err(RemoteCollectError::MachineOffline("m2".to_string())),
+                result: asupersync::Outcome::Err(RemoteCollectError::MachineOffline(
+                    "m2".to_string(),
+                )),
                 duration: Duration::from_millis(50),
                 was_online: false,
             },
@@ -825,6 +891,30 @@ mod tests {
         assert_eq!(aggregated.total_rows(), 1);
         assert!(!aggregated.warnings.is_empty());
         assert!(aggregated.error.is_some());
+    }
+
+    #[test]
+    fn test_aggregate_results_cancelled_is_not_error() {
+        let results = vec![MachineCollectResult {
+            machine_id: "m1".to_string(),
+            result: asupersync::Outcome::Cancelled(asupersync::CancelReason::user(
+                "cancelled after remote command",
+            )),
+            duration: Duration::from_millis(25),
+            was_online: true,
+        }];
+
+        let aggregated = MultiMachineCollector::aggregate_results(&results);
+
+        assert!(!aggregated.success);
+        assert!(aggregated.error.is_none());
+        assert_eq!(aggregated.warnings.len(), 1);
+        assert_eq!(aggregated.warnings[0].level, crate::WarningLevel::Info);
+        assert!(
+            aggregated.warnings[0]
+                .message
+                .contains("Collection cancelled on m1")
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+use common::{MatchMode, assert_buffer_snapshot, buffer_to_text};
 use ftui::{Cmd, Frame, GraphemePool, KeyCode, KeyEvent, Model};
-use ftui_harness::{MatchMode, assert_buffer_snapshot, buffer_to_text};
 use vc_tui::{
     App, AppMessage, Screen,
     screens::{

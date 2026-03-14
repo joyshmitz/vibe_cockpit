@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, RowBatch, Warning};
+use crate::{CollectContext, CollectOutcome, CollectResult, Collector, RowBatch, Warning};
 
 // =============================================================================
 // JSON Structures for bv --robot-triage
@@ -237,69 +237,70 @@ impl Collector for BeadsCollector {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut rows = vec![];
         let mut warnings = vec![];
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Generate a repo ID based on the current working directory
         let repo_id = format!("repo_{:x}", hash_string(&ctx.machine_id));
 
         // 1. Run bv --robot-triage for comprehensive triage data
+        crate::collect_checkpoint!(cx, "pre_bv_triage_command");
         let triage_result = ctx
             .executor
             .run_timeout("bv --robot-triage", ctx.timeout)
             .await;
 
         match triage_result {
-            Ok(output) => match serde_json::from_str::<BvTriageOutput>(&output) {
-                Ok(triage) => {
-                    // Store triage snapshot
-                    let triage_row = serde_json::json!({
-                        "machine_id": &ctx.machine_id,
-                        "collected_at": ctx.collected_at.to_rfc3339(),
-                        "repo_id": &repo_id,
-                        "quick_ref_json": serde_json::to_string(&triage.triage.quick_ref).ok(),
-                        "recommendations_json": serde_json::to_string(&triage.triage.recommendations).ok(),
-                        "project_health_json": serde_json::to_string(&triage.triage.project_health).ok(),
-                        "raw_json": &output,
-                    });
+            Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_bv_triage_command_pre_parse");
+                match serde_json::from_str::<BvTriageOutput>(&output) {
+                    Ok(triage) => {
+                        // Store triage snapshot
+                        let triage_row = serde_json::json!({
+                            "machine_id": &ctx.machine_id,
+                            "collected_at": ctx.collected_at.to_rfc3339(),
+                            "repo_id": &repo_id,
+                            "quick_ref_json": serde_json::to_string(&triage.triage.quick_ref).ok(),
+                            "recommendations_json": serde_json::to_string(&triage.triage.recommendations).ok(),
+                            "project_health_json": serde_json::to_string(&triage.triage.project_health).ok(),
+                            "raw_json": &output,
+                        });
 
-                    rows.push(RowBatch {
-                        table: "beads_triage_snapshots".to_string(),
-                        rows: vec![triage_row],
-                    });
+                        rows.push(RowBatch {
+                            table: "beads_triage_snapshots".to_string(),
+                            rows: vec![triage_row],
+                        });
 
-                    // Store graph metrics
-                    let health = &triage.triage.project_health;
-                    let graph_row = serde_json::json!({
-                        "repo_id": &repo_id,
-                        "collected_at": ctx.collected_at.to_rfc3339(),
-                        "pagerank_json": null, // Would need separate command
-                        "betweenness_json": null,
-                        "critical_path_json": null,
-                        "node_count": health.graph.node_count,
-                        "edge_count": health.graph.edge_count,
-                        "density": health.graph.density,
-                        "has_cycles": health.graph.has_cycles,
-                    });
+                        // Store graph metrics
+                        let health = &triage.triage.project_health;
+                        let graph_row = serde_json::json!({
+                            "repo_id": &repo_id,
+                            "collected_at": ctx.collected_at.to_rfc3339(),
+                            "pagerank_json": null, // Would need separate command
+                            "betweenness_json": null,
+                            "critical_path_json": null,
+                            "node_count": health.graph.node_count,
+                            "edge_count": health.graph.edge_count,
+                            "density": health.graph.density,
+                            "has_cycles": health.graph.has_cycles,
+                        });
 
-                    rows.push(RowBatch {
-                        table: "beads_graph_metrics".to_string(),
-                        rows: vec![graph_row],
-                    });
+                        rows.push(RowBatch {
+                            table: "beads_graph_metrics".to_string(),
+                            rows: vec![graph_row],
+                        });
+                    }
+                    Err(e) => {
+                        warnings.push(
+                            Warning::error(format!("Failed to parse bv triage: {e}"))
+                                .with_context(output),
+                        );
+                    }
                 }
-                Err(e) => {
-                    warnings.push(
-                        Warning::error(format!("Failed to parse bv triage: {e}"))
-                            .with_context(output),
-                    );
-                }
-            },
+            }
             Err(e) => {
                 warnings.push(Warning::warn(format!(
                     "Failed to run bv --robot-triage: {e}"
@@ -308,45 +309,49 @@ impl Collector for BeadsCollector {
         }
 
         // 2. Run br list --json for issue details
+        crate::collect_checkpoint!(cx, "pre_br_list_command");
         let list_result = ctx
             .executor
             .run_timeout("br list --format json", ctx.timeout)
             .await;
 
         match list_result {
-            Ok(output) => match serde_json::from_str::<BrListOutput>(&output) {
-                Ok(list) => {
-                    let issue_rows: Vec<serde_json::Value> = list
-                        .issues
-                        .iter()
-                        .map(|issue| {
-                            serde_json::json!({
-                                "repo_id": &repo_id,
-                                "issue_id": &issue.id,
-                                "status": &issue.status,
-                                "priority": issue.priority,
-                                "type": &issue.issue_type,
-                                "title": &issue.title,
-                                "labels_json": serde_json::to_string(&issue.labels).ok(),
-                                "deps_json": serde_json::to_string(&issue.blocked_by).ok(),
-                                "updated_at": &issue.updated_at,
-                                "raw_json": serde_json::to_string(&issue).ok(),
+            Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_br_list_command_pre_parse");
+                match serde_json::from_str::<BrListOutput>(&output) {
+                    Ok(list) => {
+                        let issue_rows: Vec<serde_json::Value> = list
+                            .issues
+                            .iter()
+                            .map(|issue| {
+                                serde_json::json!({
+                                    "repo_id": &repo_id,
+                                    "issue_id": &issue.id,
+                                    "status": &issue.status,
+                                    "priority": issue.priority,
+                                    "type": &issue.issue_type,
+                                    "title": &issue.title,
+                                    "labels_json": serde_json::to_string(&issue.labels).ok(),
+                                    "deps_json": serde_json::to_string(&issue.blocked_by).ok(),
+                                    "updated_at": &issue.updated_at,
+                                    "raw_json": serde_json::to_string(&issue).ok(),
+                                })
                             })
-                        })
-                        .collect();
+                            .collect();
 
-                    if !issue_rows.is_empty() {
-                        rows.push(RowBatch {
-                            table: "beads_issues".to_string(),
-                            rows: issue_rows,
-                        });
+                        if !issue_rows.is_empty() {
+                            rows.push(RowBatch {
+                                table: "beads_issues".to_string(),
+                                rows: issue_rows,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        // br list might not support --format json, try alternative
+                        warnings.push(Warning::warn(format!("Failed to parse br list: {e}")));
                     }
                 }
-                Err(e) => {
-                    // br list might not support --format json, try alternative
-                    warnings.push(Warning::warn(format!("Failed to parse br list: {e}")));
-                }
-            },
+            }
             Err(e) => {
                 warnings.push(Warning::warn(format!("Failed to run br list: {e}")));
             }
@@ -354,7 +359,8 @@ impl Collector for BeadsCollector {
 
         let success = rows.iter().any(|batch| !batch.rows.is_empty());
 
-        Ok(CollectResult {
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult {
             rows,
             new_cursor: None,
             raw_artifacts: vec![],
@@ -366,7 +372,9 @@ impl Collector for BeadsCollector {
             } else {
                 Some("Failed to collect beads data".to_string())
             },
-        })
+        };
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

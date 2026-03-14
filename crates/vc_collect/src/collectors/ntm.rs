@@ -15,7 +15,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+    Warning,
+};
 
 /// System info from ntm status
 #[derive(Debug, Deserialize)]
@@ -171,20 +174,18 @@ impl Collector for NtmCollector {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if ntm is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("ntm".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("ntm".to_string()));
         }
 
         // Run ntm --robot-status to get session state
+        crate::collect_checkpoint!(cx, "pre_ntm_status_command");
         let status_result = ctx
             .executor
             .run_timeout("ntm --robot-status", ctx.timeout)
@@ -195,22 +196,27 @@ impl Collector for NtmCollector {
             Err(e) => {
                 let warning = Warning::error(format!("Failed to run ntm --robot-status: {e}"));
                 warnings.push(warning.clone());
-                return Ok(CollectResult::empty()
+                let result = CollectResult::empty()
                     .with_warning(warning)
-                    .with_duration(start.elapsed()));
+                    .with_duration(start.elapsed());
+                crate::collect_checkpoint!(cx, "collect_complete");
+                return asupersync::Outcome::Ok(result);
             }
         };
 
         // Parse JSON output
+        crate::collect_checkpoint!(cx, "post_ntm_status_command_pre_parse");
         let status: NtmStatusOutput = match serde_json::from_str(&output) {
             Ok(s) => s,
             Err(e) => {
                 let warning = Warning::error(format!("Failed to parse ntm output: {e}"))
                     .with_context(output.chars().take(500).collect::<String>());
                 warnings.push(warning.clone());
-                return Ok(CollectResult::empty()
+                let result = CollectResult::empty()
                     .with_warning(warning)
-                    .with_duration(start.elapsed()));
+                    .with_duration(start.elapsed());
+                crate::collect_checkpoint!(cx, "collect_complete");
+                return asupersync::Outcome::Ok(result);
             }
         };
 
@@ -327,7 +333,8 @@ impl Collector for NtmCollector {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

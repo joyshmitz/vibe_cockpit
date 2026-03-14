@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, RowBatch, Warning};
+use crate::{CollectContext, CollectOutcome, CollectResult, Collector, RowBatch, Warning};
 
 /// Default drift threshold (10%)
 const DEFAULT_DRIFT_THRESHOLD: f64 = 0.10;
@@ -155,20 +155,18 @@ impl Collector for CloudBenchCollector {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let mut batches = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Try HTTP endpoint first
         let base_url = format!("http://127.0.0.1:{}", self.port);
 
         // Collect raw benchmarks
         let raw_url = format!("{base_url}/data/raw/");
+        crate::collect_checkpoint!(cx, "pre_cloud_bench_raw_command");
         let raw_result = ctx
             .executor
             .run_timeout(&format!("curl -s -f '{raw_url}'"), ctx.timeout)
@@ -177,6 +175,7 @@ impl Collector for CloudBenchCollector {
         let mut overall_score: Option<f64> = None;
 
         if let Ok(output) = raw_result {
+            crate::collect_checkpoint!(cx, "post_cloud_bench_raw_command_pre_parse");
             match serde_json::from_str::<RawDataResponse>(&output) {
                 Ok(data) => {
                     let raw_rows: Vec<serde_json::Value> = data
@@ -242,12 +241,14 @@ impl Collector for CloudBenchCollector {
 
         // Collect overall scores
         let overall_url = format!("{base_url}/data/overall/");
+        crate::collect_checkpoint!(cx, "pre_cloud_bench_overall_command");
         let overall_result = ctx
             .executor
             .run_timeout(&format!("curl -s -f '{overall_url}'"), ctx.timeout)
             .await;
 
         if let Ok(output) = overall_result {
+            crate::collect_checkpoint!(cx, "post_cloud_bench_overall_command_pre_parse");
             match serde_json::from_str::<OverallScores>(&output) {
                 Ok(scores) => {
                     overall_score = scores.overall_score;
@@ -300,6 +301,7 @@ impl Collector for CloudBenchCollector {
                 let check_cmd =
                     format!("test -f {db_path} && sqlite3 {db_path} \"SELECT 1\" 2>/dev/null");
 
+                crate::collect_checkpoint!(cx, "pre_cloud_bench_sqlite_probe");
                 if let Ok(output) = ctx.executor.run_timeout(&check_cmd, ctx.timeout).await
                     && output.contains('1')
                 {
@@ -308,33 +310,38 @@ impl Collector for CloudBenchCollector {
                         "sqlite3 -json {db_path} \"SELECT * FROM benchmarks ORDER BY timestamp DESC LIMIT 100\""
                     );
 
+                    crate::collect_checkpoint!(cx, "pre_cloud_bench_sqlite_query");
                     if let Ok(json_output) = ctx.executor.run_timeout(&query_cmd, ctx.timeout).await
-                        && let Ok(rows) =
-                            serde_json::from_str::<Vec<serde_json::Value>>(&json_output)
                     {
-                        let raw_rows: Vec<serde_json::Value> = rows
-                            .iter()
-                            .map(|r| {
-                                serde_json::json!({
-                                    "machine_id": ctx.machine_id,
-                                    "collected_at": ctx.collected_at.to_rfc3339(),
-                                    "benchmark_type": r.get("type").unwrap_or(&serde_json::Value::Null),
-                                    "benchmark_name": r.get("name").unwrap_or(&serde_json::Value::Null),
-                                    "value": r.get("value").unwrap_or(&serde_json::Value::Null),
-                                    "unit": r.get("unit").unwrap_or(&serde_json::Value::Null),
-                                    "raw_json": serde_json::to_string(&r).ok(),
+                        crate::collect_checkpoint!(cx, "post_cloud_bench_sqlite_query_pre_parse");
+                        if let Ok(rows) =
+                            serde_json::from_str::<Vec<serde_json::Value>>(&json_output)
+                        {
+                            let raw_rows: Vec<serde_json::Value> = rows
+                                .iter()
+                                .map(|r| {
+                                    serde_json::json!({
+                                        "machine_id": ctx.machine_id,
+                                        "collected_at": ctx.collected_at.to_rfc3339(),
+                                        "benchmark_type": r.get("type").unwrap_or(&serde_json::Value::Null),
+                                        "benchmark_name": r.get("name").unwrap_or(&serde_json::Value::Null),
+                                        "value": r.get("value").unwrap_or(&serde_json::Value::Null),
+                                        "unit": r.get("unit").unwrap_or(&serde_json::Value::Null),
+                                        "raw_json": serde_json::to_string(&r).ok(),
+                                    })
                                 })
-                            })
-                            .collect();
+                                .collect();
 
-                        if !raw_rows.is_empty() {
-                            batches.push(RowBatch {
-                                table: "cloud_bench_raw".to_string(),
-                                rows: raw_rows,
-                            });
-                            warnings
-                                .push(Warning::info(format!("Used SQLite fallback: {db_path}",)));
-                            break;
+                            if !raw_rows.is_empty() {
+                                batches.push(RowBatch {
+                                    table: "cloud_bench_raw".to_string(),
+                                    rows: raw_rows,
+                                });
+                                warnings.push(Warning::info(format!(
+                                    "Used SQLite fallback: {db_path}",
+                                )));
+                                break;
+                            }
                         }
                     }
                 }
@@ -368,7 +375,8 @@ impl Collector for CloudBenchCollector {
                 .iter()
                 .all(|w| w.level != crate::WarningLevel::Error);
 
-        Ok(CollectResult {
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult {
             rows: batches,
             new_cursor: None, // Stateless collector
             raw_artifacts: vec![],
@@ -376,7 +384,9 @@ impl Collector for CloudBenchCollector {
             duration: start.elapsed(),
             success,
             error: None,
-        })
+        };
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

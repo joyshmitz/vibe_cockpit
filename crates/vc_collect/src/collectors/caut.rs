@@ -15,7 +15,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+    Warning,
+};
 
 /// Output schema from `caut usage --json`
 #[derive(Debug, Deserialize)]
@@ -99,26 +102,26 @@ impl Collector for CautCollector {
         false // Each collection is a point-in-time snapshot
     }
 
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if caut is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound("caut".to_string()));
+            return asupersync::Outcome::Err(CollectError::ToolNotFound("caut".to_string()));
         }
 
         // Run caut usage --json
-        let output = ctx
-            .executor
-            .run_timeout("caut usage --json", ctx.timeout)
-            .await?;
+        crate::collect_checkpoint!(cx, "pre_caut_usage_command");
+        let output = crate::collect_try!(
+            ctx.executor
+                .run_timeout("caut usage --json", ctx.timeout)
+                .await
+        );
 
         // Parse the JSON output
+        crate::collect_checkpoint!(cx, "post_caut_usage_command_pre_parse");
         let data: CautUsageOutput = match serde_json::from_str(&output) {
             Ok(d) => d,
             Err(e) => {
@@ -148,6 +151,7 @@ impl Collector for CautCollector {
             })
             .collect();
 
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
         let mut result = CollectResult::with_rows(vec![RowBatch {
             table: "account_usage_snapshots".to_string(),
             rows,
@@ -160,7 +164,8 @@ impl Collector for CautCollector {
             result = result.with_warning(warning);
         }
 
-        Ok(result)
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

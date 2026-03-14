@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use ftui::{Frame, GraphemePool, Model};
-use ftui_harness::{MatchMode, assert_buffer_snapshot};
+use ftui::{Buffer, Frame, GraphemePool, Model, core::terminal_capabilities::TerminalProfile};
 use vc_tui::{
     App, Screen,
     screens::{
@@ -75,6 +75,141 @@ fn snapshot_path(base_dir: &str, name: &str) -> PathBuf {
 
 fn bless_enabled() -> bool {
     std::env::var("BLESS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchMode {
+    TrimTrailing,
+}
+
+fn assert_buffer_snapshot(name: &str, buf: &Buffer, base_dir: &str, mode: MatchMode) {
+    let path = snapshot_path_with_profile(Path::new(base_dir), name);
+    let actual = buffer_to_text(buf);
+
+    if bless_enabled() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("failed to create snapshot directory");
+        }
+        std::fs::write(&path, &actual).expect("failed to write snapshot");
+        return;
+    }
+
+    match std::fs::read_to_string(&path) {
+        Ok(expected) => {
+            let normalized_expected = normalize(&expected, mode);
+            let normalized_actual = normalize(&actual, mode);
+            if normalized_expected != normalized_actual {
+                let diff = diff_text(&normalized_expected, &normalized_actual);
+                std::panic::panic_any(format!(
+                    "\n=== Snapshot mismatch: '{name}' ===\nFile: {}\nMode: {mode:?}\nSet BLESS=1 to update.\n\nDiff (- expected, + actual):\n{diff}",
+                    path.display()
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::panic::panic_any(format!(
+                "\n=== No snapshot found: '{name}' ===\nExpected at: {}\nRun with BLESS=1 to create it.\n\nActual output ({w}x{h}):\n{actual}",
+                path.display(),
+                w = buf.width(),
+                h = buf.height(),
+            ));
+        }
+        Err(error) => panic!("failed to read snapshot {}: {error}", path.display()),
+    }
+}
+
+fn buffer_to_text(buf: &Buffer) -> String {
+    let capacity = (buf.width() as usize + 1) * buf.height() as usize;
+    let mut out = String::with_capacity(capacity);
+
+    for y in 0..buf.height() {
+        if y > 0 {
+            out.push('\n');
+        }
+        for x in 0..buf.width() {
+            let cell = buf.get(x, y).expect("buffer cell in bounds");
+            if cell.is_continuation() {
+                continue;
+            }
+            if cell.is_empty() {
+                out.push(' ');
+            } else if let Some(ch) = cell.content.as_char() {
+                out.push(ch);
+            } else {
+                for _ in 0..cell.content.width().max(1) {
+                    out.push('?');
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn normalize(text: &str, mode: MatchMode) -> String {
+    match mode {
+        MatchMode::TrimTrailing => text
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn diff_text(expected: &str, actual: &str) -> String {
+    let expected_lines: Vec<&str> = expected.lines().collect();
+    let actual_lines: Vec<&str> = actual.lines().collect();
+    let max_lines = expected_lines.len().max(actual_lines.len());
+    let mut out = String::new();
+    let mut has_diff = false;
+
+    for index in 0..max_lines {
+        match (
+            expected_lines.get(index).copied(),
+            actual_lines.get(index).copied(),
+        ) {
+            (Some(expected_line), Some(actual_line)) if expected_line == actual_line => {
+                writeln!(out, " {expected_line}").expect("write unchanged diff line");
+            }
+            (Some(expected_line), Some(actual_line)) => {
+                writeln!(out, "-{expected_line}").expect("write removed diff line");
+                writeln!(out, "+{actual_line}").expect("write added diff line");
+                has_diff = true;
+            }
+            (Some(expected_line), None) => {
+                writeln!(out, "-{expected_line}").expect("write removed diff line");
+                has_diff = true;
+            }
+            (None, Some(actual_line)) => {
+                writeln!(out, "+{actual_line}").expect("write added diff line");
+                has_diff = true;
+            }
+            (None, None) => {}
+        }
+    }
+
+    if has_diff { out } else { String::new() }
+}
+
+fn snapshot_path_with_profile(base_dir: &Path, name: &str) -> PathBuf {
+    let resolved_name = match current_test_profile() {
+        Some(profile) if !name.ends_with(&format!("__{}", profile.as_str())) => {
+            format!("{name}__{}", profile.as_str())
+        }
+        _ => name.to_string(),
+    };
+
+    base_dir
+        .join("tests")
+        .join("snapshots")
+        .join(format!("{resolved_name}.snap"))
+}
+
+fn current_test_profile() -> Option<TerminalProfile> {
+    std::env::var("FTUI_TEST_PROFILE")
+        .ok()
+        .and_then(|value| value.parse::<TerminalProfile>().ok())
+        .and_then(|profile| (profile != TerminalProfile::Detected).then_some(profile))
 }
 
 fn screen_slug(screen: Screen) -> &'static str {

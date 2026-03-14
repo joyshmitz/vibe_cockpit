@@ -27,4 +27,3 @@ chrono.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 mockall.workspace = true
-ftui-harness.workspace = true

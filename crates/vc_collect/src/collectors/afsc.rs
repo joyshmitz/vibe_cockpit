@@ -19,7 +19,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, Cursor, RowBatch, Warning};
+use crate::{
+    CollectContext, CollectError, CollectOutcome, CollectResult, Collector, Cursor, RowBatch,
+    Warning,
+};
 
 /// Status output from `afsc status --format json`
 #[derive(Debug, Default, Deserialize)]
@@ -177,23 +180,21 @@ impl Collector for AfscCollector {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut warnings = Vec::new();
         let mut batches = Vec::new();
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Check if afsc is available
         if !self.check_availability(ctx).await {
-            return Err(CollectError::ToolNotFound(
+            return asupersync::Outcome::Err(CollectError::ToolNotFound(
                 "automated_flywheel_setup_checker".to_string(),
             ));
         }
 
         // 1. Collect status snapshot
+        crate::collect_checkpoint!(cx, "pre_afsc_status_command");
         let status_result = ctx
             .executor
             .run_timeout(
@@ -203,6 +204,7 @@ impl Collector for AfscCollector {
             .await;
 
         if let Ok(output) = status_result {
+            crate::collect_checkpoint!(cx, "post_afsc_status_command_pre_parse");
             match serde_json::from_str::<AfscStatus>(&output) {
                 Ok(status) => {
                     let row = serde_json::json!({
@@ -243,9 +245,11 @@ impl Collector for AfscCollector {
             "automated_flywheel_setup_checker list --format jsonl --limit 100".to_string()
         };
 
+        crate::collect_checkpoint!(cx, "pre_afsc_list_command");
         let list_result = ctx.executor.run_timeout(&list_cmd, ctx.timeout).await;
 
         if let Ok(output) = list_result {
+            crate::collect_checkpoint!(cx, "post_afsc_list_command_pre_parse");
             let runs: Vec<AfscRunRecord> = Self::parse_jsonl(&output, &mut warnings);
 
             let run_rows: Vec<serde_json::Value> = runs
@@ -278,6 +282,7 @@ impl Collector for AfscCollector {
         }
 
         // 3. Collect validation events
+        crate::collect_checkpoint!(cx, "pre_afsc_validate_command");
         let validate_result = ctx
             .executor
             .run_timeout(
@@ -287,6 +292,7 @@ impl Collector for AfscCollector {
             .await;
 
         if let Ok(output) = validate_result {
+            crate::collect_checkpoint!(cx, "post_afsc_validate_command_pre_parse");
             let events: Vec<AfscEvent> = Self::parse_jsonl(&output, &mut warnings);
 
             let event_rows: Vec<serde_json::Value> = events
@@ -316,6 +322,7 @@ impl Collector for AfscCollector {
         }
 
         // 4. Collect error clusters
+        crate::collect_checkpoint!(cx, "pre_afsc_classify_error_command");
         let classify_result = ctx
             .executor
             .run_timeout(
@@ -325,6 +332,7 @@ impl Collector for AfscCollector {
             .await;
 
         if let Ok(output) = classify_result {
+            crate::collect_checkpoint!(cx, "post_afsc_classify_error_command_pre_parse");
             let clusters: Vec<AfscErrorCluster> = Self::parse_jsonl(&output, &mut warnings);
 
             let cluster_rows: Vec<serde_json::Value> = clusters
@@ -368,7 +376,8 @@ impl Collector for AfscCollector {
                 .iter()
                 .all(|w| w.level != crate::WarningLevel::Error);
 
-        Ok(CollectResult {
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult {
             rows: batches,
             new_cursor,
             raw_artifacts: vec![],
@@ -376,7 +385,9 @@ impl Collector for AfscCollector {
             duration: start.elapsed(),
             success,
             error: None,
-        })
+        };
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 

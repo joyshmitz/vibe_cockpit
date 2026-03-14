@@ -13,7 +13,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::{CollectContext, CollectError, CollectResult, Collector, RowBatch, Warning};
+use crate::{CollectContext, CollectOutcome, CollectResult, Collector, RowBatch, Warning};
 
 // =============================================================================
 // JSON Structures for gh CLI output
@@ -315,16 +315,14 @@ impl Collector for GhCollector {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn collect(
-        &self,
-        _cx: &asupersync::Cx,
-        ctx: &CollectContext,
-    ) -> Result<CollectResult, CollectError> {
+    async fn collect(&self, cx: &asupersync::Cx, ctx: &CollectContext) -> CollectOutcome {
         let start = Instant::now();
         let mut rows = vec![];
         let mut warnings = vec![];
+        crate::collect_checkpoint!(cx, "collect_start");
 
         // Try to detect repo from current directory
+        crate::collect_checkpoint!(cx, "pre_gh_repo_view_command");
         let repo_view_result = ctx
             .executor
             .run_timeout(
@@ -335,6 +333,7 @@ impl Collector for GhCollector {
 
         let repo_id = match &repo_view_result {
             Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_gh_repo_view_command_pre_parse");
                 if let Ok(view) = serde_json::from_str::<GhRepoView>(output) {
                     if let Some(name_with_owner) = &view.name_with_owner {
                         Self::hash_repo(name_with_owner)
@@ -351,6 +350,7 @@ impl Collector for GhCollector {
         };
 
         // Get issues (limit to 100 for performance)
+        crate::collect_checkpoint!(cx, "pre_gh_issue_list_command");
         let issues_result = ctx
             .executor
             .run_timeout(
@@ -360,13 +360,16 @@ impl Collector for GhCollector {
             .await;
 
         let issues: Vec<GhIssue> = match issues_result {
-            Ok(output) => match serde_json::from_str(&output) {
-                Ok(issues) => issues,
-                Err(e) => {
-                    warnings.push(Warning::warn(format!("Failed to parse issues: {e}")));
-                    vec![]
+            Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_gh_issue_list_command_pre_parse");
+                match serde_json::from_str(&output) {
+                    Ok(issues) => issues,
+                    Err(e) => {
+                        warnings.push(Warning::warn(format!("Failed to parse issues: {e}")));
+                        vec![]
+                    }
                 }
-            },
+            }
             Err(e) => {
                 warnings.push(Warning::warn(format!("Failed to list issues: {e}")));
                 vec![]
@@ -374,6 +377,7 @@ impl Collector for GhCollector {
         };
 
         // Get PRs (limit to 100 for performance)
+        crate::collect_checkpoint!(cx, "pre_gh_pr_list_command");
         let prs_result = ctx
             .executor
             .run_timeout(
@@ -383,13 +387,16 @@ impl Collector for GhCollector {
             .await;
 
         let prs: Vec<GhPullRequest> = match prs_result {
-            Ok(output) => match serde_json::from_str(&output) {
-                Ok(prs) => prs,
-                Err(e) => {
-                    warnings.push(Warning::warn(format!("Failed to parse PRs: {e}")));
-                    vec![]
+            Ok(output) => {
+                crate::collect_checkpoint!(cx, "post_gh_pr_list_command_pre_parse");
+                match serde_json::from_str(&output) {
+                    Ok(prs) => prs,
+                    Err(e) => {
+                        warnings.push(Warning::warn(format!("Failed to parse PRs: {e}")));
+                        vec![]
+                    }
                 }
-            },
+            }
             Err(e) => {
                 warnings.push(Warning::warn(format!("Failed to list PRs: {e}")));
                 vec![]
@@ -421,7 +428,8 @@ impl Collector for GhCollector {
 
         let success = !issues.is_empty() || !prs.is_empty();
 
-        Ok(CollectResult {
+        crate::collect_checkpoint!(cx, "post_parse_pre_return");
+        let result = CollectResult {
             rows,
             new_cursor: None,
             raw_artifacts: vec![],
@@ -436,7 +444,9 @@ impl Collector for GhCollector {
                         .to_string(),
                 )
             },
-        })
+        };
+        crate::collect_checkpoint!(cx, "collect_complete");
+        asupersync::Outcome::Ok(result)
     }
 }
 
