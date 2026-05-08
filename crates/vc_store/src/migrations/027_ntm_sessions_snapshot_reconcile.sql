@@ -10,8 +10,9 @@
 -- shape and the row-batch persist fails with
 --   "Binder Error: Table 'ntm_sessions_snapshot' does not have a column with name 'exists'"
 --
--- Add the missing columns from the 006 shape. SQLite allows ADD COLUMN with a
--- DEFAULT for existing rows, and the pre-existing 001 columns (work_dir,
+-- Add the missing columns from the 006 shape. DuckDB (current) and SQLite
+-- (post-translation per migrations.rs) both support ADD COLUMN with a DEFAULT
+-- that backfills existing rows. The pre-existing 001 columns (work_dir,
 -- git_branch, agent_counts_json, panes_json) are left in place so historical
 -- rows remain readable and any out-of-tree consumer is not broken.
 ALTER TABLE ntm_sessions_snapshot ADD COLUMN exists INTEGER DEFAULT 1;
