@@ -3791,6 +3791,40 @@ mod tests {
         // No panic = success
     }
 
+    // Regression: migration 001 created ntm_sessions_snapshot without the
+    // columns the NTM collector emits, and migration 006 used CREATE TABLE
+    // IF NOT EXISTS so it didn't reconcile them. Migration 027 reconciles
+    // the schema. This test exercises an insert with the shape the collector
+    // actually emits and fails loudly if the columns are absent.
+    #[test]
+    fn test_ntm_sessions_snapshot_accepts_collector_shape() {
+        let store = VcStore::open_memory().unwrap();
+        let row = serde_json::json!({
+            "machine_id": "host",
+            "collected_at": "2026-05-08T00:00:00Z",
+            "session_name": "swarm",
+            "exists": 1,
+            "attached": 1,
+            "windows": 3,
+            "panes": 6,
+            "agent_count": 2,
+            "agents_json": "[]",
+            "raw_json": "{}",
+        });
+        store.insert_json("ntm_sessions_snapshot", &row).unwrap();
+
+        let rows = store
+            .query_json(
+                "SELECT machine_id, session_name, exists, panes, agent_count \
+                 FROM ntm_sessions_snapshot WHERE machine_id = 'host'",
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["session_name"], "swarm");
+        assert_eq!(rows[0]["panes"], 6);
+        assert_eq!(rows[0]["agent_count"], 2);
+    }
+
     // =============================================================================
     // JSON Insert Tests
     // =============================================================================

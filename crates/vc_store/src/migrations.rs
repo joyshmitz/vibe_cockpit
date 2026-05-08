@@ -209,6 +209,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "machine_status",
         sql: include_str!("migrations/026_machine_status.sql"),
     },
+    Migration {
+        version: 27,
+        name: "ntm_sessions_snapshot_reconcile",
+        sql: include_str!("migrations/027_ntm_sessions_snapshot_reconcile.sql"),
+    },
 ];
 
 /// Run all pending migrations
